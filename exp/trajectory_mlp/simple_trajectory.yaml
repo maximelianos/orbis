@@ -1,0 +1,49 @@
+# Configuration file for NuPlan trajectory prediction training
+
+model:
+  base_learning_rate: 1.0e-3 # 1.0e-3 for batch size 30
+  adjust_learning_rate: false
+  find_unused_parameters: false  # No unused parameters - tokenizer is frozen
+  static_graph: true  # Static graph since tokenizer is frozen
+  gradient_clip_algorithm: norm
+  precision: 16-mixed
+  grad_clip: 1.0
+  grad_acc_steps: 1
+  target: networks.simple_trajectory_model.SimpleDiffusionModel
+  params:
+    warmup_steps: 0 # 5000
+    min_lr_multiplier: 0.1
+    hidden_dim: 64
+    sigma_min: 1.0e-5        # Minimum noise level
+    n_diffusion_samples: 1
+    
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 30          # Batch size per GPU, 8
+    num_workers: 1         # Number of dataloader workers, 4
+    
+    train:
+      target: loaders_for_projects.synthetic_trajectory_dataloader.SyntheticTrajectoryDataset
+      params:
+        hdf5_paths_file: /work/dlcsmall2/galessos-nuPlan/nuplan_train_10Hz_640x360_images.txt # Text file with paths to train HDF5 files
+        #size: [288, 512]              # Image size (H, W)
+        num_frames: 5                 # Number of input frames
+        stored_data_frame_rate: 5     # Frame rate in HDF5 files
+        frame_rate: 5                 # Sampling frame rate
+        aug: resize_center            # Augmentation type
+        scale_min: 0.15              # Min scale for augmentation
+        scale_max: 0.5               # Max scale for augmentation
+        T: 20     # number timesteps in trajectory
+        r: 1     # distance
+        turn_min: 0.0
+        turn_max: 1.0
+        output_normalization: true
+        dataset_size: 10000 # length of dataset
+
+
+lightning:
+  trainer:
+    log_every_n_steps: 50
+    val_check_interval: 1.0  # Validate once per epoch
+    limit_val_batches: 100   # Limit validation batches for speed

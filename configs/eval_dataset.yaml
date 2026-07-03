@@ -1,0 +1,16 @@
+# Configuration file for evaluation on NuPlan
+
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 30          # Batch size per GPU, 8
+    num_workers: 1         # Number of dataloader workers, 4
+
+    # We don't use buffered dataset to retain original data indices
+    train:
+      target: loaders_for_projects.nuplan_dataloader.NuplanHDF
+      params:
+        hdf5_path: data/cache/nuplan_precomputed.h5
+        normalization_cache_dir: data/cache
+        return_image: true
+        output_normalization: true

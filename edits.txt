@@ -1,0 +1,335 @@
+## Loaders
+
+Created loaders_for_projects/nuplan.py
+
+Silvio already implemented trajectory prediction:
+orbis_traj_projects/models/second_stage/fm_model_steering.py
+orbis_traj_projects/networks/DiT/dit_steering.py
+
+Export latents:
+```
+python evaluate/nuplan_recode.py --exp_dir logs_tk/tokenizer_288x512
+```
+
+## Suggestions
+
+Suggestion for NuPlan: increase max file limit
+
+Model:
+Compare two variants: 1) self-attention with hang-over image tokens 2) cross-attention only with the trajectory tokens output
+
+Compare input of latents from VAE to processing the frame history with (a part of world model?) and then giving them to the small traj model.
+
+## 11.12
+
+System prompt:
+```
+Write the necessary amount of comments in the code, especially the shapes of tensors. Write assertions to check shapes in runtime.
+```
+
+### Important existing code
+
+networks/DiT/dit.py
+
+### Versions
+
+* v1: add spatial and temporal attention blocks, train latent diffusion (doesn't work)
+configs/nuplan.yaml
+train_nuplan.py
+trajectory
+
+* simple_trajectory: diffuse points one by one
+* whole_trajectory: 
+
+### Dataset
+
+* Script loaders_for_projects/nuplan_visualize.py uses MultiHDF5DatasetMultiFrameIdxMappingOdometry to visualize NuPlan dataset.
+* Increase open file limit: `ulimit -n 10000`
+
+### Trajectory encoding
+
+This is the encode function to convert (x, y) coordinates into velocity and normalize:
+
+X_MAX = 100 # meters
+dx_norm = (x_t - x_{t-1}) / X_MAX
+
+Decode to get (x, y) coordinates from normalized velocity:
+
+x = cumsum * X_MAX
+
+The scipt loaders_for_projects/nuplan_dataloader.py implements these functions.
+It is based on MultiHDF5DatasetMultiFrameIdxMappingOdometry like nuplan_visualize.py.
+
+### Trajectory prediction model
+
+**Cross-attention block**
+
+Implemented a CrossAttention block, that doesn't add the positional embeddings.
+This class consists of fully connected layers, normalization and cross-attention.
+SpatialBlock and TemporalBlock is based on CrossAttention class. The SpatialBlock contains additionaly only the positional embedding .
+
+**Spatial block**
+
+Created SpatialBlock with cross-attention in blocks.py. Inherits from CA block.
+It follows the implementation in networks/DiT/dit.py, imports the 2d embedding function.
+
+The SpatialBlock accepts latent representations of images in format (BxT, C, H, W) and outputs aggregated tokens (BxT, C) by using cross attention.
+- it processes frames independently for performance reasons
+- it has 2D positional embedding, no time embedding
+
+**Temporal block**
+
+Implemented TemporalBlock in blocks.py. Inherits from CA block. It imports the 1d embedding function from networks/DiT/dit.py.
+
+This block accepts context tokens in format (B, N, C), adds 1D positional encoding, applies cross attention to predict (B, M, C).
+
+**Trajectory diffusion**
+
+The model is a diffusion transformer.
+
+1. Implemented TrajectoryModel in file ./model.py that trains for predicting the next trajectory point using flow matching.
+
+It follows models/second_stage/fm_model.py in implementation. The model takes batch['images'] and batch['velocity'] from NuPlanVelocityDataset.
+- it first encodes the images with the frozen tokenizer
+- then processes the latent images independently with SpatialBlock
+- then it runs diffusion iterations on the extracted latents to predict the next trajectory token. The final trajectory token is convert to the normalized trajectory velocity using a fully connected layer
+
+2. Implemented train_nuplan.py, following main.py. The configuration for training is in nuplan.yaml.
+
+I encode and decode the trajectory using nuplan_dataloader.py.
+
+Common features:
+- checkpoint saving
+- an option to only test the trained model
+
+Implemented AdaLN in SpatialBlock and TemporalBlock. The condition is the timestep in diffusion process.
+
+## 19.12.2025
+
+```
+# Train from scratch
+python train_nuplan.py --config configs/nuplan.yaml
+
+# Resume training
+python train_nuplan.py --config configs/nuplan.yaml --resume logs_nuplan/2025-12-12T15-53-52_nuplan_DLC26973059/checkpoints/last.ckpt
+
+# Test only
+python train_nuplan.py --config configs/nuplan.yaml --test --resume path/to/checkpoint.ckpt
+
+# Custom settings
+python train_nuplan.py --config configs/nuplan.yaml --gpus 4 --epochs 200 --name my_experiment
+```
+
+TODO: Check interleaving
+trajectory_model:225
+
+## 08.01.2025
+
+Create evaluate/test_nuplan.py
+- diffusion model defined in trajectory_model.py
+- model is trained in train_nuplan.py
+
+Test is similar to rollout.py, but with the new trajectory prediction architecture, while rollout.py is suited for image generation. I use sample() function from trajectory_model.
+
+Testing strategy:
+- load the train NuPlan dataset (I didn't implement validation dataset)
+- for each sample in the dataset, autoregressively predict the trajectory one step at a time. The first trajectory point is always 0.
+- measure the max x, y distance from ground truth over all timesteps (video timesteps, not diffusion timesteps)
+- plot the distribution of the error (max distance) in the experiment folder as in the training script
+- plot the GT and predicted trajectory like in nuplan_visualize for several episodes. Choose episodes based on their place in the error distribution: some good examples, some middle examples, and some bad examples. Include the error value in the plot filename to distinguish.
+
+Create test.sh similar to run.sh to run the test on the cluster.
+
+Configuration:
+* nuplan_dataloader: length of NuPlanVelocityDataset
+* train_nuplan: epochs
+
+## 15.01.2025
+
+IMPORTANT:
+```
+* nuplan_dataloader:NuPlanVelocityDataset:__len__ - change size of dataset
+```
+
+## 23.01.2025
+
+1) Add an option in nuplan.yaml disable_encoder for debugging purpose:
+In compute_loss and sample functions, if disable_encoder is true, create a zero-filled latents tensor, instead of calling self.encode_images
+
+2) In compute_loss:
+* pad the context to the left with one 0 token
+* including the padded token, loop over all possible context sizes to predict t=1, 2, ... T-1
+* sum all the losses
+
+## 10.02.2025
+
+- key findings
+  - Normalize output, implemented as part of dataloader. Predicting delta position.
+  - Train on all steps of the trajectory.
+  - max_steps instead of max_epochs - needed for correct cosine annealing computation!
+
+### Plan
+- diffuse the whole trajectory, see distribution (+ 19.02)
+- implement DiT on synthetic dataset
+- debugging
+  - precompute latents
+  - when everything works run on NuPlan (batch job 2 minutes + dataloading 2 minutes + model 2 minutes + encoder 95% of compute)
+
+## 10.03.2025
+
+Train:
+- train_nuplan.py
+
+Evaluate:
+- evaluate/test_trajectory_diffusion.py
+
+
+
+1. More complicated dataset
+2. Temporal block on synthetic data
+
+Adaptive Layer Normalization-Zero
+
+
+Compare explicit traj with polynomial repr of trajectories
+
+### 26.03.2026
+
+Resuts
+* Tiny image encoder works on the synthetic dataset.
+  You can see that when the green dot is not visible, the model goes to one of the red dots.
+* Export to HDF of images, **encoded latents**, and trajectory to one HDF. Instant dataset loading.
+
+### 01.04.2026
+
+**File structure**
+
+Config: configs/game.yaml
+Dataloader: loaders_for_projects/game_dataloader.py
+Model: networks/whole_s_att.py
+Attention: networks/blocks.py
+CNN: networks/simple_cnn.py
+
+game.yaml: Renamed model.grad_clip to model.gradient_clip_val, which is what train_nuplan.py actually reads for Trainer clipping
+
+**data**
+
+loaders_for_projects/
+custom_multiframe - original dataset loader. requires example_data_config.yaml
+moons - basic
+braincell_dataloader - single number dataset
+
+### 09.04.2026
+
+Lightweight HDF dataloader
+* Trajectory, velocity
+* Images
+* Encoded_q_rec, ecoded_q_sem
+Buffered dataloader. Replacement rate 1:10. At batch size 30, training speed 30 it/s.
+... How to cache samples on GPU? Using CUDA in worker process not allowed.
+
+q = 10 x 16 x 16 x 16 (x 2) = 80 960
+image = 10 x 3 x 256 x 256 = 2 000 000
+
+trajectory -> velocity
+Velocity normalization.
+
+Unconditional training done.
+Condition on trajectory done.
+* Changes:
+  * add spatial block
+  * add trajectory context
+* 10 steps, tested conditioning on 2 steps and 4 steps
+Had a bug because of many configs, and set the wrong number of steps.
+
+Plan:
+*CFG, dropout 50%. More complex: scheduling
+
+============
+
+remove turn in dataloader
+param enable_images
+
+removed model config from eval_dataset.conf to minimize chances of mistake
+
+### 16.04.2026
+
+- added image context
+- limited trajectory and image context length to 2. predicted steps: 8
+- encoded more diverse episodes from nuplan
+
+source dataset length: 2 554 588
+
+### 21.05.2026
+
+Results
+* Downloaded test split of navsim
+* Ran and visualized the constant velocity agent
+* Wrote inference of my model on rgb images, now need to integrate into navsim
+
+Plan
+* Run my model in navsim
+* Train my model on the whole nuplan without latent extraction (should work now)
+* Writing the report. Related work: DiT, navigation world models; nuScenes, navsim
+
+General plan
+* Organize previous experiments: (07.06)
+  * Training on synthetic trajectories - with or without normalization. Type of normalization
+  * Autoregressive prediction vs whole trajectory diffusion. (try out self forcing?)
+  * Basic visual understanding - following the color dot
+* Architecture ablations: number of transformer layers, size of hidden latent, (visual aggregation on/off)
+
+* Trajectory evaluation:
+  * Measure EPDMS in navsim
+  * Measure precision and recall (Mazen) by ADE or Frechet with a threshold
+  * Measure entropy of correct trajectories in the discrete distribution of correct variants / plot discrete distribution
+  * Std of trajectory points (doesn't have a particular meaning about correctness, just for info)
+
+More experiments:
+* Compare the driving agent with a ResNet imitating the expert (like in Hydra/navsim paper)
+* Extract COSMOS latents and train my model with those
+* Prediction in Bernstein polynomial space - learning to generate the trajectories in the space of the polynomial coefficients
+* Compositional generalization - selecting different situations from the simulator (by hand or automatically, e.g. DINO semantic meaning?), training on one subset and testing on another
+
+
+### 28.05.2026
+
+* Wrote 10 pages of related works
+* Implemented inference of my model inference in navsim
+
+I would like to make ablations before training my model on the whole nuPlan (especially I'm concerned with normalization).
+Also I don't have conditioning of generation on the frame rate. Can you explain these parameters in the config?
+
+stored_data_frame_rate: 10    # Frame rate in HDF5 files
+frame_rate: 5                 # Sampling frame rate
+
+Is it actually frame rate? Then in navsim we have 2Hz, or 2 fps.
+
+I'll write about the ablations next week.
+
+### 07.06.2026
+
+=== REMOVE
+Moons
+simple_diffusion_model.py
+
+
+whole_trajectory.yaml
+networks.whole_t_att.DiffusionModel 
+
+- split the diffusion into separate class
+- recheck the blocks. use attention layers from LG
+- train simple in Colab (or even locally?) with Transformer model (don't try other models! we need only the transformer!)
+- train game in Colab
+
+### 03.07.2026
+
+Download NAVSIM:
+- download_maps.sh
+- download_test.sh
+
+Get folder structure:
+- download
+ - maps
+ - test_navsim_logs
+ - test_sensor_blobs

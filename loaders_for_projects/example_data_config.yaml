@@ -1,0 +1,21 @@
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 64
+    num_workers: 4
+    train:
+    - target: data.custom_multiframe_odo.MultiHDF5DatasetMultiFrameIdxMappingOdometry
+      params:
+        #hdf5_paths_file: /work/dlcsmall1/galessos-nuPlan/nuplan_train_10Hz_640x360_images.txt
+        hdf5_paths_file: /work/dlclarge1/velikanm-max/orbis/nuplan_train_10Hz_640x360_images.txt
+        odo_transform_config:
+          target: data.custom_multiframe_odo.TrajectoryLoaderNuPlanFromSpeedYawRate
+        size:
+        - 256
+        - 256
+        num_frames: 10
+        stored_data_frame_rate: 10
+        frame_rate: 5
+        aug: random_shift
+        scale_min: 0.15
+        scale_max: 0.5

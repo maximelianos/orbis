@@ -1,0 +1,68 @@
+# python train_nuplan.py --config configs/nuplan_encoder.yaml --logdir logs_exp --max_steps 5000
+
+
+# Configuration file for NuPlan trajectory prediction training
+# Encodes images to latents on-the-fly on GPU (no precomputed HDF5 cache),
+# sourcing raw samples from the full nuPlan dataset listed in nuplan_export_config.yaml.
+
+model:
+  base_learning_rate: 1.0e-3 # 1.0e-3 for batch size 30
+  adjust_learning_rate: false
+  find_unused_parameters: false  # No unused parameters - tokenizer is frozen
+  static_graph: true  # Static graph since tokenizer is frozen
+  gradient_clip_algorithm: norm
+  precision: 16-mixed
+  grad_acc_steps: 1
+  target: networks.whole_context.DiffusionModel
+  params:
+    warmup_steps: 0
+    min_lr_multiplier: 0.1
+    image_encoder_channels: 16    # channels in stage1 image encoder
+    hidden_dim: 32
+    sigma_min: 1.0e-5
+    num_frames: 10  # total trajectory length
+
+    context_traj: 0  # for debugging
+    context_images: 4
+    pred_steps: 6
+
+    encode_images: true            # encode raw images on-the-fly with the frozen tokenizer
+    tokenizer_exp_dir: logs_tk/tokenizer_288x512
+    tokenizer_ckpt: checkpoints/last.ckpt
+    tokenizer_config: config.yaml
+
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 10          # 30 gives OOM on 2080 Ti
+    num_workers: 1
+
+    train:
+      # Raw images on CPU behind a ring buffer; the model encodes them to latents
+      # on GPU. Mirrors configs/nuplan_export_config.yaml for the full nuPlan list.
+      target: loaders_for_projects.nuplan_dataloader.NuPlanVelocityBuffered
+      params:
+        # ring-buffer knobs (amortize slow HDF5 frame reads)
+        initial_buffer_size: 100
+        max_buffer_size: 1000
+        replace_rate: 1
+        replace_count: 10
+        dataset_size: 100000      # samples per "epoch" seen by the trainer
+
+        # NuPlanVelocityDataset params
+        hdf5_paths_file: /work/dlclarge1/velikanm-max/orbis/nuplan_train_10Hz_640x360_images.txt
+        odo_transform_config:
+          target: loaders_for_projects.custom_multiframe_odo.TrajectoryLoaderNuPlanFromSpeedYawRate
+        size: [256, 256]
+        num_frames: 10
+        stored_data_frame_rate: 10
+        frame_rate: 5
+        aug: resize_center
+        scale_min: 0.15
+        scale_max: 0.5
+
+lightning:
+  trainer:
+    log_every_n_steps: 50
+    val_check_interval: 1.0
+    limit_val_batches: 100

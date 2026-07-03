@@ -1,0 +1,23 @@
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 8          # Batch size per GPU
+    num_workers: 4         # Number of dataloader workers
+    
+    train:
+      target: loaders_for_projects.nuplan_dataloader.NuPlanVelocityDataset
+      params:
+        # parameters for data.custom_multiframe_odo.MultiHDF5DatasetMultiFrameIdxMappingOdometry
+        #hdf5_paths_file: /work/dlcsmall1/galessos-nuPlan/nuplan_train_10Hz_640x360_images.txt # Text file with paths to train HDF5 files
+        hdf5_paths_file: /work/dlclarge1/velikanm-max/orbis/nuplan_train_10Hz_640x360_images.txt
+        odo_transform_config:  # Transform from speed and yaw to (x, y, heading)
+          target: loaders_for_projects.custom_multiframe_odo.TrajectoryLoaderNuPlanFromSpeedYawRate
+        size:  # Image size (H, W). downscale by 16 = 16x16. 16x16x32 = 8 192 * 2bytes = 16 000 bytes per image
+        - 256
+        - 256
+        num_frames: 10                # Number of input frames
+        stored_data_frame_rate: 10    # Frame rate in HDF5 files
+        frame_rate: 5                 # Sampling frame rate
+        aug: resize_center            # Augmentation type: resize_center, random_shift
+        scale_min: 0.15               # Augmentation scale
+        scale_max: 0.5

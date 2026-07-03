@@ -1,0 +1,39 @@
+# Ignore Tex files
+*.out
+*.log
+*.aux
+*.gz
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info
+.cache
+
+# IDE settings
+.ipynb_checkpoints/
+.idea
+.vscode
+.serena
+
+# MacOS files
+.DS_Store
+
+# images
+logs*
+*.png
+*.jpg
+*.tif
+*.gif
+*.pdf
+*.npy
+
+# Rust
+*.lock
+target/
+
+# data
+data/cache*
+./logs_tk
+./logs_wm

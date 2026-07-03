@@ -1,0 +1,44 @@
+# Configuration file for NuPlan trajectory prediction training
+
+model:
+  base_learning_rate: 1.0e-3 # 1.0e-3 for batch size 30
+  adjust_learning_rate: false
+  find_unused_parameters: false  # No unused parameters - tokenizer is frozen
+  static_graph: true  # Static graph since tokenizer is frozen
+  gradient_clip_algorithm: norm
+  precision: 16-mixed
+  #gradient_clip_val: 1.0
+  grad_acc_steps: 1
+  target: evaluate.exp_game.s_att.DiffusionModel  #networks.whole_trajectory_model.WholeDiffusionModel
+  params:
+    warmup_steps: 0 # 5000
+    min_lr_multiplier: 0.1
+    hidden_dim: 32 # 64
+    sigma_min: 1.0e-5        # Minimum noise level
+    n_diffusion_samples: 1
+    pred_steps: 20
+    
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 30          # Batch size per GPU, 8
+    num_workers: 1         # Number of dataloader workers, 4
+    
+    train:
+      target: evaluate.exp_game.game_dataloader.GameTrajectoryDataset
+      params:
+        T: 20     # number timesteps in trajectory
+        r: 1     # distance
+        turn_min: 0.0
+        turn_max: 1.0
+        output_normalization: true
+        dataset_size: 10000 # length of dataset
+        image_height: 64
+        image_width: 64
+
+
+lightning:
+  trainer:
+    log_every_n_steps: 50
+    val_check_interval: 1.0  # Validate once per epoch
+    limit_val_batches: 100   # Limit validation batches for speed

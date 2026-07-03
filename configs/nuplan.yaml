@@ -1,0 +1,45 @@
+# Configuration file for NuPlan trajectory prediction training
+
+model:
+  base_learning_rate: 1.0e-3 # 1.0e-3 for batch size 30
+  adjust_learning_rate: false
+  find_unused_parameters: false  # No unused parameters - tokenizer is frozen
+  static_graph: true  # Static graph since tokenizer is frozen
+  gradient_clip_algorithm: norm
+  precision: 16-mixed
+  #gradient_clip_val: 1.0
+  grad_acc_steps: 1
+  #networks.whole_trajectory_model.WholeDiffusionModel
+  #networks.whole_s_att.DiffusionModel - unconditional trajectories
+  target: networks.whole_context.DiffusionModel
+  params:
+    warmup_steps: 0 # 5000
+    min_lr_multiplier: 0.1
+    image_encoder_channels: 16    # channels in stage1 image encoder
+    hidden_dim: 32
+    sigma_min: 1.0e-5             # Minimum noise level
+    num_frames: 10  # total trajectory length
+    
+    context_traj: 0  # context trajectory steps
+    context_images: 4  # context image frames
+    pred_steps: 6
+    
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 30          # Batch size per GPU, 8
+    num_workers: 1         # Number of dataloader workers, 4
+
+    train:
+      target: loaders_for_projects.nuplan_dataloader.NuplanBufferedHDF
+      params:
+        hdf5_path: data/cache/nuplan_precomputed.h5
+        normalization_cache_dir: data/cache
+        return_image: true
+        output_normalization: false
+
+lightning:
+  trainer:
+    log_every_n_steps: 50
+    val_check_interval: 1.0  # Validate once per epoch
+    limit_val_batches: 100   # Limit validation batches for speed
