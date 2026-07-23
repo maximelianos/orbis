@@ -147,15 +147,15 @@ class DiffusionModel(pl.LightningModule):
         )
         
         self.temporal_stack = nn.ModuleList([
-            TemporalBlock(D, D*2, self.pred_steps),
-            TemporalBlock(D, D*2, self.pred_steps),
-            TemporalBlock(D, D*2, self.pred_steps),
-            TemporalBlock(D, D*2, self.pred_steps),
-            
-            TemporalBlock(D, D*2, self.pred_steps),
-            TemporalBlock(D, D*2, self.pred_steps),
-            TemporalBlock(D, D*2, self.pred_steps),
-            TemporalBlock(D, D*2, self.pred_steps),
+            TemporalBlock(D, D*2),
+            TemporalBlock(D, D*2),
+            TemporalBlock(D, D*2),
+            TemporalBlock(D, D*2),
+
+            TemporalBlock(D, D*2),
+            TemporalBlock(D, D*2),
+            TemporalBlock(D, D*2),
+            TemporalBlock(D, D*2),
         ])
         
         self.output_norm = nn.LayerNorm(D)

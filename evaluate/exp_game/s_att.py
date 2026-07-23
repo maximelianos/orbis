@@ -88,7 +88,6 @@ class DiffusionModel(pl.LightningModule):
         self.temporal_denoiser = TemporalBlock(
             embed_dim=D,
             ff_dim=D*2,
-            num_predictions=self.pred_steps
         )
         self.spatial_block = SpatialBlock(
             embed_dim=D,

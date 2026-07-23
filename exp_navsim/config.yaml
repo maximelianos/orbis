@@ -1,0 +1,184 @@
+# Single config for the whole exp_navsim pipeline.
+# Subkeys separate the logic:
+#   data_long  -> long (whole-episode) dataloader + visualization + caching source
+#   cache      -> latent caching (encoder + output dir)
+#   data       -> training data module (train/val), used by train_nuplan.py
+#   model      -> flow-matching trajectory model
+# The scripts (visualize_dataset / cache_latents / test_decode / test_model) read
+# data_long and cache; training reads model + data.
+
+# --------------------------------------------------------------------------- #
+# Source dataset switch (episode loader + latent-cache source).
+#   navhard  -> navhard_two_stage (short 5-frame scenes)
+#   navtrain -> full NAVSIM navtrain logs (many long ~40-frame scenes @ 2 Hz)
+# NavsimLongBase.from_config(cfg) reads this flag and picks the matching class +
+# the matching `data_long.<name>` params below (explicit dispatch, no factory).
+# --------------------------------------------------------------------------- #
+dataset: navtrain
+
+# --------------------------------------------------------------------------- #
+# Long (whole-episode) dataloader params — one block per dataset; `dataset:`
+# above selects which block is loaded into the corresponding dataset class.
+# --------------------------------------------------------------------------- #
+data_long:
+  navhard:                        # -> exp_navsim.data.navsim_long.NavsimLongDataset
+    data_root: /scratch/global/velikanm/navsim/download/navhard_two_stage  # navsim/download/navhard_two_stage
+    size: 256                     # square image (H, W); downscaled by tokenizer
+    stored_data_frame_rate: 2     # NAVSIM logs are ~2 Hz (0.5 s interval)
+    frame_rate: 2                 # sampling rate; frame_interval = stored / rate
+    front_camera: CAM_F0
+    load_surround: true           # also load 5 surround cameras for BEV/vis
+    # split: "all" = every episode (caching/visualization); "train"/"val" =
+    #   deterministic hash-based split of the scene tokens (no overlap).
+    split: all
+    val_fraction: 0.1             # fraction of scene tokens assigned to validation
+
+  navtrain:                       # -> exp_navsim.data.navtrain_long.NavtrainLongDataset
+    logs_root: navsim/download/trainval_navsim_logs/trainval
+    sensor_root: navsim/download/trainval_sensor_blobs/trainval
+    # Episode index (scenes with contiguous on-disk frames) is built once and
+    # cached here. Delete this file to rebuild after downloading more blobs.
+    index_cache: data/navtrain_episode_index.pkl
+    size: 256
+    stored_data_frame_rate: 2
+    frame_rate: 2
+    front_camera: CAM_F0
+    load_surround: true
+    min_frames: 5                 # drop scenes with fewer usable (on-disk) frames
+    split: all
+    val_fraction: 0.1
+
+# --------------------------------------------------------------------------- #
+# Latent cache (image encoder). `dir` is keyed by dataset name.
+# --------------------------------------------------------------------------- #
+cache:
+  dir:
+    navhard:  data/navsim_latents    # one <episode_idx>.h5 per episode
+    navtrain: data/navtrain_latents
+  chunk: 100                     # frames per encoder forward pass
+  encoder:
+    exp_dir: logs_tk/tokenizer_288x512
+    ckpt: checkpoints/last.ckpt
+    config: config.yaml
+
+# --------------------------------------------------------------------------- #
+# Model
+# --------------------------------------------------------------------------- #
+model:
+  base_learning_rate: 5.0e-4 # 1.0e-3 
+  adjust_learning_rate: false
+  precision: 16-mixed
+  grad_acc_steps: 1
+  target: exp_navsim.model.NavsimTrajectoryModel
+  params:
+    hidden_dim: 64 # 32
+    image_encoder_channels: 16      # channels of the stage-1 tokenizer latents
+    sigma_min: 1.0e-5
+    warmup_steps: 0
+    min_lr_multiplier: 0.1
+    # Episode length T is free — the model predicts every frame after the context.
+    context_traj: 0                 # known-trajectory context frames; predicts T - context_traj
+    context_images: 2               # image-observed context frames (independent)
+    num_diffusion_steps: 50
+    num_val_samples: 20              # inference repeats per context in validation
+    # raw vs encoded image input:
+    #   encode_images: false -> read cached latents (data below must be latent)
+    #   encode_images: true  -> read raw images, model loads the tokenizer
+    encode_images: false
+    tokenizer_exp_dir: logs_tk/tokenizer_288x512
+    tokenizer_ckpt: checkpoints/last.ckpt
+    tokenizer_config: config.yaml
+
+# --------------------------------------------------------------------------- #
+# Training data module (train_nuplan.py entry point)
+#   Default: ENCODED mode (cached latents behind a buffer). For RAW mode, set
+#   model.params.encode_images: true and swap the datasets for
+#   exp_navsim.data.latent_dataset.NavsimRawWindowDataset (see readme).
+# --------------------------------------------------------------------------- #
+check_val_every_n_epoch: 5
+
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 128
+    num_workers: 1
+
+    train:
+      target: exp_navsim.data.buffer.BufferDataset
+      params:
+        enable_buffer: true
+        dataset_length: 32000      # if null, use the source dataset's length
+        initial_buffer_size: 200
+        max_buffer_size: 2000
+        replace_rate: 2
+        replace_count: 10
+        source_dataset:
+          target: exp_navsim.data.latent_dataset.NavsimLatentDataset
+          params:
+            cache_dir: data/navtrain_latents
+            #cache_dir: data/navsim_latents  # navhard
+            num_frames: 5           # window length; navtrain scenes are longer, navhard episodes are 5 frames
+            split: train            # see data_long.split note above
+            val_fraction: 0.1
+            latent_key: encoded_q_sem
+            deterministic: false
+
+    validation:
+      target: exp_navsim.data.latent_dataset.NavsimLatentDataset
+      params:
+        cache_dir: data/navtrain_latents
+        #cache_dir: data/navsim_latents  # navhard
+        num_frames: 5
+        split: val
+        val_fraction: 0.1
+        latent_key: encoded_q_sem
+        deterministic: true          # fixed windows -> same test episodes each time
+
+# --------------------------------------------------------------------------- #
+# RAW MODE (encode-on-the-fly). To use it instead of the cached-latent `data`
+# block above: set model.params.encode_images: true, then replace the whole
+# `data:` block with `data_raw:` renamed to `data:` (batches carry `images`, and
+# the model loads the tokenizer). No latent cache needed. Same window length
+# (num_frames) and train/val split as the encoded path.
+# --------------------------------------------------------------------------- #
+
+# data_raw:
+#   target: data.datamodule.DataModuleFromConfig
+#   params:
+#     batch_size: 8                    # smaller: raw images + on-GPU encoder use more memory
+#     num_workers: 4
+
+#     train:
+#       target: exp_navsim.data.buffer.BufferDataset
+#       params:
+#         enable_buffer: true          # buffer hides the slow image decoding/encoding
+#         initial_buffer_size: 100
+#         max_buffer_size: 1000
+#         replace_rate: 2
+#         replace_count: 10
+#         source_dataset:
+#           target: exp_navsim.data.latent_dataset.NavsimRawWindowDataset
+#           params:
+#             num_frames: 8
+#             deterministic: false
+#             # NavsimLongDataset params (front-camera images):
+#             data_root: navsim/download/navhard_two_stage
+#             size: 256
+#             stored_data_frame_rate: 2
+#             frame_rate: 2
+#             front_camera: CAM_F0
+#             split: train
+#             val_fraction: 0.1
+
+#     validation:
+#       target: exp_navsim.data.latent_dataset.NavsimRawWindowDataset
+#       params:
+#         num_frames: 8
+#         deterministic: true          # fixed windows -> same test episodes each time
+#         data_root: navsim/download/navhard_two_stage
+#         size: 256
+#         stored_data_frame_rate: 2
+#         frame_rate: 2
+#         front_camera: CAM_F0
+#         split: val
+#         val_fraction: 0.1

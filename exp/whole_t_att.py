@@ -82,14 +82,12 @@ class DiffusionModel(pl.LightningModule):
         # self.cross_denoiser = TemporalBlock(
         #     embed_dim=hidden_dim,
         #     ff_dim=hidden_dim*2,
-        #     num_predictions=self.max_T
         # )
         self.cross_denoiser = nn.ModuleList([
-            TemporalBlock(
-                embed_dim=hidden_dim,
-                ff_dim=hidden_dim*2,
-                num_predictions=self.max_T
-            ) for i in range(4)
+            TemporalBlock(embed_dim=hidden_dim, ff_dim=hidden_dim*2),
+            TemporalBlock(embed_dim=hidden_dim, ff_dim=hidden_dim*2),
+            TemporalBlock(embed_dim=hidden_dim, ff_dim=hidden_dim*2),
+            TemporalBlock(embed_dim=hidden_dim, ff_dim=hidden_dim*2),
         ])
         self.output_mlp = nn.Linear(hidden_dim, 2)
         

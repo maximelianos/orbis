@@ -37,3 +37,7 @@ target/
 data/cache*
 ./logs_tk
 ./logs_wm
+navsim/
+navsim
+data/navtrain_latents
+data/navtrain_episode_index.pkl

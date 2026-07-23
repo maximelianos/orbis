@@ -50,7 +50,8 @@ Create configs/long_data.yaml based on nuplan_export_config.
 # 03.07.2026
 
 # Dataloader
-Implement dataloader for navsim. I want to load navsim-hard from download/navhard_two_stage.
+Implement dataloader for navsim. I want to load navsim-hard from
+navsim/download/navhard_two_stage .
 The dataloader must be concise. Use similar return dict like in nuplan_long. Also return velocity.
 The dataloader should have config options like in long_data:
 omit num_frames,
@@ -107,7 +108,7 @@ Print only val loss in cmd logging, but save val/mse and val/std in tensorboard.
 Create a test script to produce the PDF.
 
 # General suggestions
-My code is messy, so don't reuse or import anything, except use train.py as main entry point.
+You can import from any other files, but rewrite the dataloader and model, use train.py as main entry point.
 Implement everything in folder "exp_navsim". Mostly, all this functionality is implemented in my code somewhere,
 but you need to structure it well.
 
@@ -118,3 +119,31 @@ Make code concise, create more files but with separated functionality, so it's e
 Describe your approach in exp_navsim/readme.
 
 Keep configs for everything in one config file, but in that file use different subkeys to separate the logic.
+
+Don't run any commands.
+
+# Adding navsim-navtrain
+
+I downloaded the navtrain subset of navsim in navsim/download directory. Write scripts in
+exp_navsim/data to
+1) load episodes from navtrain
+2) cache latents
+3) load latents
+like I did for navsim-hard.
+Use parts of existing data code as much as possible. If the existing code is not reusable,
+try to decompose it more in order to be reusable.
+
+Change the config to train on navtrain subset. Leave the option to use navhard.
+Make code concise, create more files but with separated functionality, so it's easier to read.
+Describe your approach in exp_navsim/readme.
+
+Don't run any commands.
+
+### Navhard and navtrain format
+
+Frame format is identical between the two datasets — same keys, same structure. The differences are purely: (1) directory layout, (2) episode length (navhard = 5-frame scenes, navtrain logs = hundreds of frames), and (3) sensor root. Let me check a few more things: scene_tokens per navtrain log, and whether sensor blobs are fully present (download looked partial).
+
+### Remove num predictions
+
+num_predictions doesn't play any role in the blocks.py - TemporalBlock. Remove it.
+In exp_navsim model, remove the restriction on episode length, leave only the context size. Just load the episode as it is, and predict all steps that are not in context. You'll need to change the model.

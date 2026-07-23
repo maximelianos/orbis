@@ -1,13 +1,12 @@
 #!/bin/bash
-# srun -p gpu --time 1:00:00 --gpus-per-node=1 --pty bash
-# sbatch --gpus-per-node=1 /scratch/local/velikanov/work/orbis/run.sh
+# sbatch --gpus-per-node=1 /work/dlclarge1/velikanm-max/orbis/run.sh
 
 # Define the partition on which the job shall run.
-#SBATCH --partition gpu    # short: -p <partition_name>
+#SBATCH --partition lmbhiwidlc_gpu-rtx2080    # short: -p <partition_name>
 
 # Define a name for your job
 #SBATCH --job-name orbis                    # short: -J <job name>
-#SBATCH --time 48:00:00
+#SBATCH --time 23:00:00
 
 # Define, how many nodes you need. Here, we ask for 1 node.
 #SBATCH --nodes 1
@@ -16,8 +15,8 @@
 # Please note the SLURM will not create this directory for you, and if it is missing, no logs will be saved.
 # You must create the directory yourself. In this case, that means you have to create the "logs" directory yourself.
 
-#SBATCH --output logs/%x-%A.out   # STDOUT  %x and %A will be replaced by the job name and job id, respectively. short: -o logs/%x-%A-job_name.out
-#SBATCH --error logs/%x-%A.err    # STDERR  short: -e logs/%x-%A-job_name.out
+#SBATCH --output logs/%x-%A-HelloCluster.out   # STDOUT  %x and %A will be replaced by the job name and job id, respectively. short: -o logs/%x-%A-job_name.out
+#SBATCH --error logs/%x-%A-HelloCluster.err    # STDERR  short: -e logs/%x-%A-job_name.out
 
 # Define the amount of memory required per node
 #SBATCH --mem 20GB
@@ -34,7 +33,7 @@ echo "Running job $SLURM_JOB_NAME using $SLURM_JOB_CPUS_PER_NODE cpus per node w
 #conda activate hello_cluster_envc
 echo $HOME
 . ~/.bashrc
-#conda activate torch
+conda activate orbis_env
 
 # Running the job
 start=`date +%s`
@@ -51,21 +50,8 @@ start=`date +%s`
 # python train_nuplan.py --config configs/game.yaml --max_steps 20000
 # python evaluate/test_game.py --config configs/game.yaml --last_ckpt --logdir logs_nuplan
 
-
-#---NAVSIM
-#python -m exp_navsim.data.cache_latents --config exp_navsim/config.yaml
-python train_nuplan.py -c exp_navsim/config.yaml --max_steps 1000000 --logdir logs_navsim
-python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 1000
-
-# python -m exp_navsim.test_decode       --config exp_navsim/config.yaml --num 3
-# python train_nuplan.py -c exp_navsim/config.yaml --max_steps 200000 --logdir logs_navsim
-# python -m exp_navsim.test_model --config exp_navsim/config.yaml \
-#     --ckpt logs_navsim/2026-07-17T10-53-01_config/checkpoints/last.ckpt --num 6
-# python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 0
-
-
-# sleep 1000000000
-# python train_nuplan.py --config configs/nuplan_encoder.yaml --logdir logs_exp --max_steps 100000
+sleep 1000000000
+python train_nuplan.py --config configs/nuplan_encoder.yaml --logdir logs_exp --max_steps 100000
 #python train_nuplan.py --config configs/nuplan.yaml --logdir logs_exp --max_steps 200000
 #python evaluate/test_nuplan.py --last_ckpt --logdir logs_nuplan --num_samples 100
 

@@ -286,26 +286,23 @@ class TemporalBlock(nn.Module):
         self,
         embed_dim,       # Embedding dimension
         ff_dim,          # Hidden dimension for pointwise feed-forward layer
-        num_predictions, # Number of tokens to predict (M)
         num_heads=8,     # Number of attention heads
         dropout=0.1,     # Dropout rate
     ):
         """
         Initialize TemporalBlock.
-        
+
         Args:
             embed_dim: Channel dimension of input embeddings
             ff_dim: Hidden dimension for pointwise feed-forward layer
-            num_predictions: Number of future tokens to predict (M)
             num_heads: Number of attention heads
             dropout: Dropout probability
         """
         super().__init__()
-        
+
         self.embed_dim = embed_dim
-        self.num_predictions = num_predictions
         self.max_input_length = 1000
-        
+
         # Cross-attention prediction with AdaLN
         self.cross_attn_block = CrossAttentionBlock(
             embed_dim=embed_dim,
@@ -313,32 +310,34 @@ class TemporalBlock(nn.Module):
             num_heads=num_heads,
             dropout=dropout,
         )
-        
+
         self.pos_embed_1d = PositionEmbedding1d(embed_dim)
-    
+
     def forward(self, context, query, condition):
         """
         Forward pass: predict future tokens from context via cross-attention.
-        
+
+        The number of predicted tokens M is taken from the query, so the same
+        block works for any prediction length.
+
         Args:
             context: Input context tokens of shape (B, N, D)
                where B=batch, N=context length, C=channels
-            query: (B, M, D)
+            query: (B, M, D) — one row per predicted token
             condition: AdaLN conditioning vector of shape (B, D)
-        
+
         Returns:
             predictions: Output tokens of shape (B, M, D)
-                        where M=num_predictions
         """
         B, N, D = context.shape
-        M = self.num_predictions
+        M = query.shape[1]
         assert D == self.embed_dim, f"Expected {self.embed_dim} channels, got {D}"
-        
+
         # Cross-attention prediction with AdaLN conditioning
         predictions = self.cross_attn_block(context, query, condition)  # (B, M, embed_dim)
-        
+
         expected_shape = (B, M, self.embed_dim)
         assert predictions.shape == expected_shape, f"Expected {expected_shape}, got {predictions.shape}"
-        
+
         return predictions
 

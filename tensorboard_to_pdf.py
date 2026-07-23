@@ -2,19 +2,7 @@
 """
 Export TensorBoard logs to a PDF report.
 
-Usage:
-    python tensorboard_to_pdf.py --logdir ./logs --output report.pdf
-    python tensorboard_to_pdf.py --logdir ./logs --output report.pdf --max_steps 1000
-    python tensorboard_to_pdf.py --logdir ./logs --output report.pdf --tags loss accuracy
-    
-    # good
-    python tensorboard_to_pdf.py --logdir ./logs_nuplan/2026-04-30T00-39-28_nuplan --output report.pdf
-    
-    python tensorboard_to_pdf.py --logdir /work/dlclarge1/velikanm-max/orbis/logs_nuplan/2026-05-15T10-32-24_nuplan --output report.pdf
-    
-    python tensorboard_to_pdf.py --logdir ./logs_nuplan --last --output report.pdf
-    
-    python tensorboard_to_pdf.py --logdir ./logs_exp/2026-06-18T18-50-32_nuplan_encoder --output report.pdf
+python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name large-model.pdf --from 1000
 
 Dependencies:
     pip install tensorboard matplotlib reportlab
@@ -26,6 +14,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+import datetime as dt
 
 import matplotlib
 matplotlib.use("Agg")
@@ -137,9 +126,33 @@ def make_chart(
     run_series: dict[str, list[tuple]],
     tmp_dir: Path,
     max_steps: int | None,
+    from_step: int | None = None,
 ) -> Path:
-    """Render one metric (all runs) to a PNG and return its path."""
+    """Render one metric (all runs) to a PNG and return its path.
+
+    Args:
+        tag: metric name (used for title/filename).
+        run_series: { run_name: [(step, value), ...] } for this metric.
+        tmp_dir: directory to write the PNG into.
+        max_steps: only plot steps up to this value (None = no limit).
+        from_step: if set, and the tag is a train/val/test metric, rescale the
+            y-axis to the min-max of values recorded at step >= from_step. This
+            zooms in on later training behaviour while keeping the full curve.
+
+    Returns:
+        Path to the written PNG file.
+    """
     fig, ax = plt.subplots(figsize=(9, 4), dpi=120)
+
+    # Whether this metric should have its y-axis clamped to the post-`from_step`
+    # history. Only applies to train/val/test curves.
+    rescale = (
+        from_step is not None
+        and any(k in tag.lower() for k in ("train", "val", "test"))
+    )
+    # Collect values recorded at step >= from_step across all runs to derive
+    # the tightened y-limits.
+    rescale_values: list[float] = []
 
     for run_name, series in run_series.items():
         series = trim_steps(series, max_steps)
@@ -148,6 +161,20 @@ def make_chart(
         steps, values = zip(*series)
         label = run_name if run_name != "." else "run"
         ax.plot(steps, values, linewidth=1.5, label=label)
+
+        if rescale:
+            rescale_values.extend(v for s, v in series if s >= from_step)
+
+    # Clamp the y-axis to the post-`from_step` min-max so the interesting late
+    # part of the curve fills the plot instead of being squashed by early spikes.
+    if rescale and rescale_values:
+        ymin, ymax = min(rescale_values), max(rescale_values)
+        if ymin == ymax:
+            # Degenerate range: add a small pad so the line stays visible.
+            pad = abs(ymin) * 0.05 or 1.0
+        else:
+            pad = (ymax - ymin) * 0.05
+        ax.set_ylim(ymin - pad, ymax + pad)
 
     ax.set_title(tag, fontsize=11, pad=8)
     ax.set_xlabel("Step", fontsize=9)
@@ -200,6 +227,7 @@ def build_pdf(
     logdir: str,
     max_steps: int | None,
     tmp_dir: Path,
+    from_step: int | None = None,
 ) -> None:
     doc = SimpleDocTemplate(
         output_path,
@@ -290,7 +318,7 @@ def build_pdf(
 
     for tag, run_series in sorted(tag_to_runs.items()):
         story.append(Paragraph(tag, h2))
-        chart_path = make_chart(tag, run_series, tmp_dir, max_steps)
+        chart_path = make_chart(tag, run_series, tmp_dir, max_steps, from_step)
 
         img_width = 15 * cm
         img_height = img_width * (4 / 9)
@@ -315,8 +343,8 @@ def main():
         help="Use the most recent run subdirectory under --logdir."
     )
     parser.add_argument(
-        "--output", default="tensorboard_report.pdf",
-        help="Output PDF file path (default: tensorboard_report.pdf)."
+        "--name", default="report.pdf",
+        help="Suffix of the PDF filename (default: report.pdf)."
     )
     parser.add_argument(
         "--tags", nargs="+", default=None,
@@ -325,6 +353,11 @@ def main():
     parser.add_argument(
         "--max_steps", type=int, default=None,
         help="Only plot steps up to this value."
+    )
+    parser.add_argument(
+        "--from", type=int, default=None, dest="from_step",
+        help="For train/val/test metrics, set the y-axis limits to the "
+             "min-max of the history recorded at/after this step."
     )
     args = parser.parse_args()
 
@@ -350,9 +383,10 @@ def main():
     tmp_dir = Path("/tmp/tb_pdf_charts")
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Generating PDF: {args.output}")
-    build_pdf(runs, step_times, args.output, args.logdir, args.max_steps, tmp_dir)
-    print(f"Done! Report saved to: {args.output}")
+    output = dt.datetime.now().strftime(f"log_%y%m%d_{args.name}")
+    print(f"Generating PDF: {output}")
+    build_pdf(runs, step_times, output, args.logdir, args.max_steps, tmp_dir, args.from_step)
+    print(f"Done! Report saved to: {output}")
 
 
 if __name__ == "__main__":

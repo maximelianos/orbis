@@ -333,3 +333,47 @@ Get folder structure:
  - maps
  - test_navsim_logs
  - test_sensor_blobs
+
+
+Download NAVSIM-hard
+Install conda from environment.yml
+Download tokenizer from HF
+
+
+ls /work/dlcsmall1/galessos-nuPlan/nuPlan_640x360_10Hz/2021.06.14.18.33.41_veh-35_03901_04264/
+
+cd /scratch/global/velikanm/navsim/download/
+bash download_maps.sh
+
+# Navsim-navtrain
+bash download_navtrain_hf.sh
+
+
+=== Load navsim-navtrain
+
+Move all code related to data to the exp_navsim/data directory.
+
+Write  exp_navsim/data 
+
+### 16.07
+Plan
+* Camera intrinsics can affect perceived motion
+* Train on navtrain and nuplan. Extract long episodes from nuplan
+* Rollout for longer duration
+
+### 23.07.2026
+* Ran encoder on NAVSIM-train and cached latents
+* Trained trajectory diffusion model with image context on whole NAVSIM-train
+* Plotted the distribution of predicted trajectories
+
+Plan
+* The length of episodes is not enough - mostly 5 seconds, mostly driving straight
+* Where can I get longer point trajectories?
+  1) filter NAVSIM-train for such trajectories
+  2) nuPlan (have to copy from TF cluster)
+  3) extract center lines from NAVSIM maps and construct GT trajectories
+* 2D driving simulator
+  * Test if diffusion can capture all kinds of trajectories
+
+project trajectory onto image
+nureasoning
