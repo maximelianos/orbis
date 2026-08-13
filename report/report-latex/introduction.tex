@@ -1,0 +1,267 @@
+\section{Introduction}
+\label{sec:introduction}
+
+Autonomous driving systems are increasingly built around the idea that an
+agent should be able to \emph{imagine} the consequences of its actions before
+committing to them. A \emph{world model} provides exactly this capability: it
+learns the dynamics of the environment from observation and can roll out
+plausible future states conditioned on the past. When the observations are
+front-camera videos, such a model becomes a learned, data-driven simulator of
+the road ahead. The appeal is twofold. First, large amounts of raw driving
+video are available without any manual annotation, so a world model can in
+principle absorb the long tail of real driving behaviour that is expensive to
+label. Second, a model that predicts future frames implicitly has to learn
+perception, scene dynamics, and the ego-vehicle's own motion, which makes its
+internal representation a natural substrate for downstream decision making.
+
+This report studies the internal representation of one such world model,
+\textbf{Orbis}~\cite{orbis}, and asks a concrete question: \emph{does the latent
+produced by a driving world model already contain the information needed to
+predict where the car is going?} To answer it, we attach a lightweight
+\emph{attentive diffusion probe} to the frozen image latent of Orbis and train
+it to predict the future 2D trajectory of the ego vehicle. The probe is
+deliberately small and non-invasive so that any predictive success can be
+attributed to the world-model representation rather than to the probe itself.
+We then assess both the pointwise accuracy and the \emph{distribution} of the
+predicted trajectories, since a good world model should capture the
+multi-modal, uncertain nature of driving rather than collapse to a single
+averaged path.
+
+The remainder of this report provides the background needed to situate this
+study. This introduction describes the Orbis world model and the proposed
+probing setup. Section~\ref{sec:related} reviews the theory of diffusion and
+flow matching, the diffusion transformer architecture that underlies modern
+generative models, and the broader landscape of world models. Section~\ref{sec:datasets}
+describes the data and benchmarks --- nuPlan and the NAVSIM pseudo-simulation
+benchmark --- on which driving trajectories are produced and scored. The
+experimental part of the project is written up separately.
+
+\subsection{The Orbis world model}
+\label{sec:orbis}
+
+Orbis~\cite{orbis} is a driving world model that predicts future video frames
+from front-camera observations. Its central finding is that a continuous,
+flow-matching world model is both more economical and more robust on
+long-horizon rollouts than its discrete, token-based counterpart: with only
+$469$M parameters and roughly $280$ hours of raw video, Orbis reaches
+state-of-the-art video-prediction quality on the nuPlan, Waymo, and
+nuPlan-turns benchmarks, while remaining stable on rollouts of up to twenty
+seconds. Crucially for our purposes, the model is trained on raw video alone,
+without depth maps, bounding boxes, HD maps, or any other privileged
+supervision, so its latent representation is learned end-to-end from the
+predictive objective.
+
+Architecturally, Orbis follows the now-standard two-stage recipe for latent
+generative modelling, illustrated in Figure~\ref{fig:orbis}. \textbf{Stage~1}
+is an image \emph{tokenizer} --- an autoencoder in the spirit of a VAE --- that
+compresses a frame into a compact latent and decodes it back to pixels.
+\textbf{Stage~2} is the latent \emph{world model} that operates entirely in this
+latent space, autoregressively generating the next frame's latent given a
+window of context frames. Decoupling the two stages lets the expensive
+generative model work at a low spatial resolution while the tokenizer handles
+the high-frequency pixel detail.
+
+\paragraph{Stage 1: hybrid image tokenizer.}
+The tokenizer maps an image $\mathbf{I}\in\mathbb{R}^{H\times W\times 3}$ to a
+spatial latent compressed by a factor of $16$ in each dimension. A distinctive
+feature of Orbis is its \emph{hybrid, factorized} design. Two separate encoders
+produce complementary representations: a \emph{semantic} encoder
+$\mathcal{E}_s$, regularized to stay close to DINOv2 features through a cosine
+similarity loss, and a \emph{detail} encoder $\mathcal{E}_d$ that captures
+low-level appearance. Each stream is quantized against its own codebook,
+yielding semantic tokens $\mathbf{q}_s$ and detail tokens $\mathbf{q}_d$, and
+the tokenizer is trained with the VQGAN objective. By fine-tuning with a
+$50\%$ probability of bypassing the vector-quantization bottleneck, the same
+encoder supports \emph{both} a continuous latent
+$\mathbf{x}=(\mathbf{x}_s;\mathbf{x}_d)$ and a discrete latent
+$\mathbf{q}=(\mathbf{q}_s;\mathbf{q}_d)$. This hybrid construction is what
+allows Orbis to compare continuous (flow-matching) and discrete (masked
+generative) world models on an identical footing. In this report the
+\emph{continuous} latent $\mathbf{x}$ is the object we probe.
+
+\paragraph{Stage 2: latent-space diffusion world model.}
+The world model is a next-frame autoregressive predictor. Given a window of
+encoded context frames $\mathbf{x}_{0:N-1}$ and a noised (or fully masked)
+target frame, it predicts the clean target latent $\mathbf{x}_N$. For the
+continuous model this is done with a flow-matching objective realized by a
+spatio-temporal diffusion transformer (STDiT): each block applies spatial
+attention within a frame, temporal attention across frames, and a
+feed-forward layer, while conditioning signals are injected through adaptive
+layer normalization (AdaLN). At inference the model samples a noise tensor for
+the target frame and integrates the learned velocity field back to a clean
+latent; the generated frame is appended to the context and the earliest frame
+is dropped, giving a sliding-window rollout. Optional ego-motion control
+(steering angle and speed) is embedded by a small MLP and added to the AdaLN
+conditioning, demonstrating that the latent dynamics can be steered.
+
+Formally, the flow-matching objective defines a forward path from data to
+noise by linear interpolation,
+\begin{equation}
+\mathbf{x}^{\tau} = (1-\tau)\,\mathbf{x} + \tau\,\boldsymbol{\epsilon},
+\qquad \tau\in[0,1],\quad \boldsymbol{\epsilon}\sim\mathcal{N}(0,I),
+\label{eq:fm-forward-intro}
+\end{equation}
+and trains a network to predict the velocity that transports the corrupted
+target frame $\mathbf{x}_N^{\tau}$ back towards the data manifold,
+conditioned on the context:
+\begin{equation}
+\mathcal{L} = \mathbb{E}_{\tau,\boldsymbol{\epsilon}}
+\big[\,\lVert \mathbf{v}(\mathbf{x}_N^{\tau};\mathbf{x}_{0:N-1})
+- (\boldsymbol{\epsilon}-\mathbf{x}_N) \rVert^2\,\big].
+\label{eq:fm-loss-intro}
+\end{equation}
+We return to the theory behind Equations~\eqref{eq:fm-forward-intro}
+and~\eqref{eq:fm-loss-intro} in Section~\ref{sec:diffusion-theory}.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=8mm, align=center, inner sep=3pt},
+  enc/.style={box, fill=blue!8},
+  lat/.style={box, fill=green!10, minimum width=9mm},
+  wm/.style={box, fill=orange!12, minimum width=20mm, minimum height=15mm},
+  dec/.style={box, fill=blue!8},
+  ar/.style={-{Stealth[length=2mm]}, thick},
+  >={Stealth[length=2mm]}
+]
+% Stage 1 label
+\node[align=center, font=\small\bfseries] (s1) at (0,2.55) {Stage 1: Hybrid image tokenizer (VAE)};
+% input image
+\node[enc, fill=gray!12] (img) at (0,0) {Input\\frame $\mathbf{I}$};
+\node[enc] (es) at (2.4,0.95) {Semantic\\enc.\ $\mathcal{E}_s$};
+\node[enc] (ed) at (2.4,-0.95) {Detail\\enc.\ $\mathcal{E}_d$};
+\node[lat] (xs) at (4.7,0.95) {$\mathbf{x}_s$};
+\node[lat] (xd) at (4.7,-0.95) {$\mathbf{x}_d$};
+\node[lat, minimum width=7mm, fill=green!18] (x) at (6.5,0) {$\mathbf{x}$};
+\draw[ar] (img) -- (es);
+\draw[ar] (img) -- (ed);
+\draw[ar] (es) -- (xs);
+\draw[ar] (ed) -- (xd);
+\draw[ar] (xs) -- (x);
+\draw[ar] (xd) -- (x);
+\node[font=\scriptsize, align=center] at (2.4,1.95) {DINOv2\\cosine loss};
+% Stage 2 label
+\node[align=center, font=\small\bfseries] (s2) at (10.2,2.55) {Stage 2: Latent diffusion world model};
+% context frames
+\node[lat, fill=green!18, minimum width=6mm] (c0) at (8.2,0.9) {$\mathbf{x}_0$};
+\node[font=\scriptsize] at (8.2,0.2) {$\cdots$};
+\node[lat, fill=green!18, minimum width=6mm] (cN) at (8.2,-0.5) {$\mathbf{x}_{N\!-\!1}$};
+\node[wm] (wm) at (10.7,0.2) {STDiT\\(flow\\matching)};
+\node[lat, fill=green!18, minimum width=8mm] (xN) at (13.0,0.2) {$\hat{\mathbf{x}}_N$};
+\draw[ar] (c0) -- (wm);
+\draw[ar] (cN) -- (wm);
+\draw[ar] (wm) -- (xN);
+% noise into wm
+\node[font=\scriptsize, align=center] (noise) at (10.4,-1.6) {noise $\boldsymbol{\epsilon}\sim\mathcal{N}(0,I)$\\+ AdaLN cond.};
+\draw[ar] (noise) -- (wm);
+% rollout feedback
+\draw[ar, dashed] (xN.north) .. controls (13.0,2.0) and (8.2,2.0) .. (c0.north)
+  node[midway, above, font=\scriptsize] {append, slide window};
+% link stages: stage-1 latent feeds the stage-2 context window
+\draw[ar, dashed] (x.east) .. controls (7.2,-0.1) and (7.4,-0.45) .. (cN.west);
+% decoder
+\node[dec] (dec) at (13.0,-1.8) {Image\\decoder};
+\draw[ar] (xN) -- (dec);
+\node[box, fill=gray!12] (out) at (13.0,-3.2) {Predicted\\next frame};
+\draw[ar] (dec) -- (out);
+\end{tikzpicture}
+\caption{The two-stage Orbis architecture. \textbf{Stage~1} is a hybrid
+tokenizer with a DINOv2-regularized semantic encoder and a detail encoder,
+producing a continuous latent $\mathbf{x}$ (or, equivalently, discrete tokens).
+\textbf{Stage~2} is a spatio-temporal diffusion transformer trained with flow
+matching that predicts the next-frame latent $\hat{\mathbf{x}}_N$ from a window
+of context latents; the prediction is appended and the window slides forward to
+produce long rollouts. The frozen latent $\mathbf{x}$ is the representation we
+probe in this work.}
+\label{fig:orbis}
+\end{figure}
+
+\subsection{Probing the latent for future trajectories}
+\label{sec:probe}
+
+A standard way to interrogate what a learned representation ``knows'' is to
+freeze it and train a small read-out head on a target task; if a simple probe
+succeeds, the information is linearly or near-linearly accessible in the
+representation~\cite{dosovitskiy_vit}. Our target task is \emph{future
+trajectory prediction}: given the latent of the current (and recent) frames, we
+want to predict the sequence of future 2D positions $(x,y)$ that the ego vehicle
+will follow in its own coordinate frame. This is the same output space used by
+modern end-to-end planners and by the trajectory-based evaluation of Orbis
+itself, which makes the predictions directly comparable to driving benchmarks.
+
+Two design choices define the probe. First, the read-out is an
+\emph{attention} probe rather than a plain linear layer. The image latent is a
+spatial grid of tokens, and which spatial regions matter for the future
+trajectory --- lane markings, the vanishing point, leading vehicles --- depends
+on the scene. A small set of learned query tokens attends over the frozen
+latent grid and pools it into a fixed-size context vector, so the probe can
+focus on the informative regions without modifying the backbone. Second, the
+trajectory is produced by a \emph{diffusion} model operating directly in the 2D
+trajectory space. Driving is inherently multi-modal: at an intersection,
+turning left and turning right are both valid, and a regression head trained
+with an $L_2$ loss would average them into an infeasible straight-ahead path.
+A diffusion head instead learns the full conditional distribution of
+trajectories and can sample several distinct, plausible futures, which is
+exactly what is needed to assess the \emph{distribution} of behaviours encoded
+in the world-model latent. Figure~\ref{fig:probe} summarizes the setup.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=8mm, align=center, inner sep=3pt},
+  frozen/.style={box, fill=blue!8},
+  train/.style={box, fill=orange!14},
+  ar/.style={-{Stealth[length=2mm]}, thick},
+  >={Stealth[length=2mm]}
+]
+% input
+\node[box, fill=gray!12] (img) at (0,0) {Recent\\frames};
+\node[frozen] (enc) at (2.3,0) {Frozen Orbis\\encoder $\mathcal{E}$};
+% latent grid
+\node[box, fill=green!12, minimum width=10mm, minimum height=12mm] (grid) at (4.7,0) {latent\\grid $\mathbf{x}$};
+\draw[ar] (img) -- (enc);
+\draw[ar] (enc) -- (grid);
+\node[font=\scriptsize] at (2.3,-1.1) {(no gradient)};
+% attention probe
+\node[train, minimum height=12mm] (attn) at (7.4,0) {Attention\\probe\\(learned\\queries)};
+\draw[ar] (grid) -- (attn) node[midway, above, font=\scriptsize] {keys/values};
+\node[box, fill=green!18, minimum width=8mm] (ctx) at (9.8,0) {context\\$\mathbf{c}$};
+\draw[ar] (attn) -- (ctx);
+% diffusion head
+\node[train, minimum height=12mm] (diff) at (12.0,0) {2D trajectory\\diffusion\\head};
+\draw[ar] (ctx) -- (diff) node[midway, above, font=\scriptsize] {cond.};
+\node[box, minimum height=12mm, fill=gray!10] (noise) at (12.0,-2.0) {noise\\$\to$ denoise};
+\draw[ar] (noise) -- (diff);
+% output trajectory
+\begin{scope}[shift={(14.4,-0.1)}]
+  \draw[->, gray] (-0.2,-0.7) -- (-0.2,0.9) node[above, font=\scriptsize, black] {$y$};
+  \draw[->, gray] (-0.2,-0.7) -- (1.3,-0.7) node[right, font=\scriptsize, black] {$x$};
+  \draw[blue, thick] (0.0,-0.6) .. controls (0.2,0.0) and (0.5,0.4) .. (0.9,0.7);
+  \draw[red, thick, dashed] (0.0,-0.6) .. controls (0.0,0.1) and (-0.1,0.5) .. (0.0,0.8);
+  \fill[blue] (0.0,-0.6) circle (1.2pt);
+\end{scope}
+\node[font=\scriptsize, align=center] at (15.0,-1.6) {sampled\\trajectories};
+\end{tikzpicture}
+\caption{The attentive diffusion probe. The Orbis encoder is frozen and
+produces a spatial latent grid for the recent frames. A small attention probe
+with learned query tokens pools the grid into a context vector $\mathbf{c}$,
+which conditions a diffusion model that generates future 2D ego trajectories
+$(x,y)$ directly in trajectory space. Because the head is generative, it can
+sample several distinct futures (e.g.\ go straight vs.\ turn), letting us
+evaluate the multi-modal distribution of trajectories rather than a single
+averaged path.}
+\label{fig:probe}
+\end{figure}
+
+This framing connects three threads that the rest of the report develops in
+turn. The \emph{generative machinery} of both Orbis and the probe is diffusion
+/ flow matching, reviewed in Section~\ref{sec:diffusion-theory}, and the
+\emph{architecture} that carries it is the diffusion transformer of
+Section~\ref{sec:dit}. The \emph{idea} of reusing a predictive video model as a
+planning substrate places the work within the world-model literature of
+Section~\ref{sec:world-models}, and in particular alongside navigation world
+models that already use trajectory rollouts for decision making. Finally, the
+\emph{evaluation} of the produced trajectories relies on the driving datasets
+and planning metrics of Section~\ref{sec:datasets}.

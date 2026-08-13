@@ -1,0 +1,174 @@
+\documentclass[addpoints]{exam}
+%\documentclass[9pt]{extarticle}
+\pagestyle{headandfoot}
+
+\usepackage[T1,T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+%\usepackage[russian]{babel} % changes date and table caption
+
+\usepackage{amsmath, amsfonts, amssymb}
+\usepackage{verbatim}
+\usepackage{graphicx}
+\usepackage[usenames,dvipsnames]{xcolor}
+\usepackage{parskip}
+\usepackage{tikz} % drawing schemes
+\usetikzlibrary{arrows.meta, positioning, calc, fit, backgrounds, shapes.geometric}
+
+% fancy table
+\usepackage{caption}
+\usepackage{tabularray}
+\usepackage{varwidth}
+\UseTblrLibrary{booktabs}
+\setlength{\heavyrulewidth}{1.5pt}
+\usepackage{enumitem}
+\usepackage{subcaption}
+\usepackage{multirow}
+\usepackage{microtype}
+\usepackage{makecell}
+%\usepackage{etoolbox} % For logic
+
+% ---------- Python code listings ----------
+\usepackage{listings}
+\definecolor{codekeyword}{RGB}{0,0,180}
+\definecolor{codestring}{RGB}{163,21,21}
+\definecolor{codecomment}{RGB}{0,128,0}
+\definecolor{codeident}{RGB}{38,127,153}
+\definecolor{codenumber}{RGB}{125,125,125}
+\definecolor{codeback}{RGB}{248,248,248}
+\definecolor{codeframe}{RGB}{220,220,220}
+\lstdefinestyle{python}{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{codekeyword}\bfseries,
+  stringstyle=\color{codestring},
+  commentstyle=\color{codecomment}\itshape,
+  emph={self},emphstyle=\color{codeident}\itshape,
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  framesep=5pt,
+  rulecolor=\color{codeframe},
+  backgroundcolor=\color{codeback},
+  numbers=left,
+  numberstyle=\ttfamily\footnotesize\color{codenumber},
+  numbersep=8pt,
+  stepnumber=1,
+  xleftmargin=22pt,
+  xrightmargin=4pt,
+  aboveskip=8pt,
+  belowskip=4pt,
+  columns=fullflexible,
+  keepspaces=true,
+}
+\lstset{style=python}
+% ------------------------------------------
+
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+\newcommand{\semester}{SS 2026}
+\runningheader{\students}{}{\semester}
+\runningfooter{}{\thepage}{}
+\headrule
+\footrule
+
+% ---------- Modify team name, students (matriculation number), exercise number here ----------
+\newcommand{\teamname}{adl2026-team1}
+\newcommand{\students}{Velikanov Maxim}
+\newcommand{\assignmentnumber}{1}
+% ---------- End Modify ----------
+
+\title{Evaluating world model predictions with an attentive diffusion probe}
+\author{\students}
+\date{\today}
+
+\begin{document}
+    \maketitle
+
+    \begin{abstract}
+    We study the internal representation of the Orbis driving world model by
+    attaching a lightweight attentive diffusion probe to its frozen image
+    latent and using it to predict the future 2D ego trajectory. This report
+    provides the background for that study: it describes the two-stage Orbis
+    model (a hybrid VAE tokenizer and a flow-matching latent world model) and
+    the proposed probing setup, reviews the theory of diffusion and flow
+    matching and the diffusion-transformer architecture that underlies modern
+    generative models, surveys world models for driving and navigation, and
+    details the nuPlan dataset and the NAVSIM pseudo-simulation benchmark with
+    its PDM/EPDMS scoring. The experimental results are reported separately.
+    \end{abstract}
+
+    \tableofcontents
+    \clearpage
+
+    \input{introduction}
+    \input{related-work}
+    \input{dataset}
+    \input{synthetic}
+
+    \begin{thebibliography}{99}
+
+    \bibitem{orbis}
+    A.~Mousakhan, S.~Mittal, S.~Galesso, K.~Farid, and T.~Brox.
+    \newblock Orbis: Overcoming challenges of long-horizon prediction in driving
+    world models.
+    \newblock \emph{arXiv preprint arXiv:2507.13162}, 2025.
+
+    \bibitem{ho_ddpm}
+    J.~Ho, A.~Jain, and P.~Abbeel.
+    \newblock Denoising diffusion probabilistic models.
+    \newblock In \emph{NeurIPS}, 2020.
+
+    \bibitem{lipman_fm}
+    Y.~Lipman, R.~T.~Q. Chen, H.~Ben-Hamu, M.~Nickel, and M.~Le.
+    \newblock Flow matching for generative modeling.
+    \newblock In \emph{ICLR}, 2023.
+
+    \bibitem{dit}
+    W.~Peebles and S.~Xie.
+    \newblock Scalable diffusion models with transformers.
+    \newblock In \emph{ICCV}, 2023.
+
+    \bibitem{nwm}
+    A.~Bar, G.~Zhou, D.~Tran, T.~Darrell, and Y.~LeCun.
+    \newblock Navigation world models.
+    \newblock \emph{arXiv preprint arXiv:2412.03572}, 2024.
+
+    \bibitem{maskgit}
+    H.~Chang, H.~Zhang, L.~Jiang, C.~Liu, and W.~T. Freeman.
+    \newblock MaskGIT: Masked generative image transformer.
+    \newblock In \emph{CVPR}, 2022.
+
+    \bibitem{vqgan}
+    P.~Esser, R.~Rombach, and B.~Ommer.
+    \newblock Taming transformers for high-resolution image synthesis.
+    \newblock In \emph{CVPR}, 2021.
+
+    \bibitem{dosovitskiy_vit}
+    A.~Dosovitskiy, L.~Beyer, A.~Kolesnikov, et~al.
+    \newblock An image is worth 16x16 words: Transformers for image recognition
+    at scale.
+    \newblock In \emph{ICLR}, 2021.
+
+    \bibitem{nuplan}
+    H.~Caesar, J.~Kabzan, K.~S. Tan, et~al.
+    \newblock nuPlan: A closed-loop ML-based planning benchmark for autonomous
+    vehicles.
+    \newblock \emph{arXiv preprint arXiv:2106.11810}, 2021.
+
+    \bibitem{navsim}
+    W.~Cao, M.~Hallgarten, T.~Li, et~al.
+    \newblock Pseudo-simulation for autonomous driving.
+    \newblock In \emph{CoRL}, 2025.
+
+    \bibitem{hydra}
+    K.~Li, Z.~Li, S.~Lan, et~al.
+    \newblock Hydra-MDP++: Advancing end-to-end driving via expert-guided
+    Hydra-distillation.
+    \newblock \emph{arXiv preprint arXiv:2503.12820}, 2025.
+
+    \end{thebibliography}
+
+    % ---------- End of Document ----------
+
+\end{document}

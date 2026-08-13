@@ -1,0 +1,575 @@
+\section{A Controlled Synthetic Study}
+\label{sec:synthetic}
+
+Before training the diffusion probe on the high-dimensional Orbis latent and on
+noisy real driving logs, we validate the generative core of the method ---
+the flow-matching objective together with the temporal-transformer denoiser ---
+on a fully controlled synthetic distribution of 2D trajectories whose
+ground-truth shape is known in closed form. The motivation is one of fault
+isolation. On real nuPlan data a failure to reproduce the trajectory
+distribution could originate in the data pipeline, the tokenizer, the
+normalization, the conditioning, or the diffusion model itself, and these causes
+are hard to disentangle. By replacing the conditioning latent with a synthetic
+signal and the target with an analytically generated curve, we reduce the system
+to its generative component and ask a single question: \emph{can a flow-matching
+temporal transformer learn to denoise an entire trajectory at once and reproduce
+the target distribution as a set?} The model code validated here
+(\texttt{DiffusionModel}) is the same module, modulo the added image
+conditioning, that we later deploy on real data, so any conclusion transfers
+directly.
+
+The synthetic task is deliberately minimal. Each trajectory is a smooth cubic
+B\'ezier curve that starts at the origin, leaves along the $+x$ direction, and
+fans out to the left or right according to a single scalar \emph{turn}
+parameter. The model must denoise the whole trajectory jointly --- not
+autoregressively --- under a flow-matching objective, and produce samples that,
+\emph{as a set}, reproduce the fan-shaped ground-truth distribution. As we
+detail in Section~\ref{sec:syn-conditioning}, the turn conditioning is
+intentionally disabled in this experiment, so the model is evaluated on
+\emph{distribution coverage} rather than on per-sample turn accuracy.
+
+\subsection{Synthetic data generation}
+\label{sec:syn-data}
+
+The dataset is procedural: nothing is stored on disk, and every sample is
+computed on the fly from a turn parameter drawn uniformly,
+$\text{turn}\sim\mathcal{U}[0,1]$. The turn maps to a heading angle and to an
+endpoint on a circle of radius $r$,
+\begin{equation}
+\alpha(\text{turn}) = 30^\circ - 60^\circ\cdot\text{turn},
+\qquad
+(X, Y) = \big(r\cos\alpha,\; r\sin\alpha\big),
+\label{eq:syn-endpoint}
+\end{equation}
+so that $\text{turn}=0$ gives a left turn at $+30^\circ$, $\text{turn}=0.5$ goes
+straight ahead, and $\text{turn}=1$ gives a right turn at $-30^\circ$. With the
+configuration value $r=1$, all endpoints lie on the unit circle within a
+$60^\circ$ wedge centred on the $+x$ axis. This wedge is exactly the fan visible
+in the ``ground truth'' panels of every result figure in
+Section~\ref{sec:syn-ablations}.
+
+Given the start $p_0=(0,0)$ and the endpoint $p_3=(X,Y)$, the curve is a cubic
+B\'ezier
+\begin{equation}
+B(s) = (1-s)^3\,p_0 + 3(1-s)^2 s\,p_1 + 3(1-s)\,s^2\,p_2 + s^3\,p_3,
+\qquad s\in[0,1],
+\label{eq:bezier}
+\end{equation}
+with the two interior control points placed to force a straight initial segment,
+$p_1 = p_2 = (0.5\,r,\,0)$. Because both control points sit on the $+x$ axis, the
+tangent at the start points purely along $+x$ and the curve only begins to bend
+toward its endpoint in its second half. This is why every ground-truth
+trajectory leaves the origin along a common straight stem before fanning out, a
+shared horizontal segment near $x\in[0,0.2]$ that is clearly visible in the
+plots. The curve is sampled at $T$ equally spaced parameter values
+$s\in\{0,\tfrac{1}{T-1},\dots,1\}$, producing a $(T,2)$ array of positions; the
+configuration uses $T=20$.
+
+\paragraph{Velocity representation.}
+The model does not operate on absolute positions but on \emph{velocities}, i.e.\
+first-order position deltas,
+\begin{equation}
+v_t = p_{t+1} - p_t,\qquad t=0,\dots,T-2,
+\label{eq:velocity}
+\end{equation}
+with the last entry zero-padded since there is no frame after the last:
+\begin{lstlisting}
+velocity = np.zeros_like(trajectory)
+velocity[:-1] = trajectory[1:] - trajectory[:-1]   # (T, 2)
+\end{lstlisting}
+Each sample is thus a triple $(\text{turn},\,\text{position}\in\mathbb{R}^{T\times2},\,
+\text{velocity}\in\mathbb{R}^{T\times2})$. Working in velocity space has two
+benefits. First, the signal is roughly zero-mean and stationary along the
+trajectory, which is friendlier to a diffusion model than absolute coordinates
+that grow monotonically in $x$. Second, positions are trivially recovered by a
+cumulative sum at sampling time (Section~\ref{sec:syn-flow}). The trade-off is
+that any per-step velocity error accumulates along the cumulative sum, so a
+small systematic bias in the predicted deltas shows up as endpoint drift rather
+than path wiggle --- a fact that, as we will see, makes endpoint scatter the most
+sensitive quality indicator. Figure~\ref{fig:syn-pipeline} summarizes the
+generation and representation pipeline, and Table~\ref{tab:syn-config} lists the
+configuration.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, align=center, inner sep=3pt, minimum height=9mm},
+  gen/.style={box, fill=blue!8},
+  rep/.style={box, fill=green!10},
+  norm/.style={box, fill=orange!14},
+  ar/.style={-{Stealth[length=2mm]}, semithick},
+  >={Stealth[length=2mm]}
+]
+\node[box, fill=gray!12] (turn) at (0,0) {turn\\$\sim\mathcal{U}[0,1]$};
+\node[gen] (end) at (2.7,0) {endpoint\\$(r\cos\alpha, r\sin\alpha)$};
+\node[gen] (bez) at (5.7,0) {cubic B\'ezier\\$B(s)$, $T{=}20$};
+\node[rep] (pos) at (8.6,0) {positions\\$p_t\in\mathbb{R}^{T\times2}$};
+\node[rep] (vel) at (11.3,0) {velocities\\$v_t{=}p_{t+1}{-}p_t$};
+\node[norm] (nrm) at (11.3,-1.9) {normalize\\$\hat v{=}(v{-}\mu)/\sigma$};
+\draw[ar] (turn) -- (end);
+\draw[ar] (end) -- (bez);
+\draw[ar] (bez) -- (pos);
+\draw[ar] (pos) -- (vel);
+\draw[ar] (vel) -- (nrm);
+\node[font=\scriptsize, align=center] at (2.7,0.95) {Eq.~\eqref{eq:syn-endpoint}};
+\node[font=\scriptsize, align=center] at (5.7,0.95) {Eq.~\eqref{eq:bezier}};
+\node[font=\scriptsize, align=center] at (11.3,0.95) {Eq.~\eqref{eq:velocity}};
+\node[norm, fill=orange!8] (model) at (8.6,-1.9) {diffusion\\model input};
+\draw[ar] (nrm) -- (model);
+\end{tikzpicture}
+\caption{Synthetic data generation and representation pipeline. A scalar turn
+parameter determines an endpoint on a unit arc; a cubic B\'ezier with a
+straight-stem control-point placement interpolates from the origin to that
+endpoint; the sampled positions are differenced into velocities, which are then
+standardized per channel (Section~\ref{sec:syn-norm}) before being fed to the
+diffusion model. Positions are reconstructed from velocities by cumulative
+summation at sampling time.}
+\label{fig:syn-pipeline}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Synthetic dataset and training configuration. Image-related fields
+inherited from the nuPlan configuration (HDF5 paths, augmentation, frame rates)
+are ignored by the synthetic loader and omitted here.}
+\label{tab:syn-config}
+\begin{tblr}{
+  colspec={llX[l]},
+  row{1}={font=\bfseries},
+}
+\toprule
+Parameter & Value & Role \\
+\midrule
+$T$            & $20$    & timesteps per trajectory \\
+$r$            & $1$     & endpoint radius (unit arc) \\
+turn range     & $[0,1]$ & full left-to-right fan ($+30^\circ$ to $-30^\circ$) \\
+dataset size   & $10000$ & trajectories per epoch \\
+batch size     & $30$    & per-GPU batch \\
+base LR        & $10^{-3}$ & AdamW, weight decay $0.01$, cosine decay to $0.1\times$ \\
+precision      & 16-mixed & with gradient clipping (norm $1.0$) \\
+training steps & $5000$  & for every ablation run \\
+diffusion steps & $20$   & Euler steps at sampling time \\
+$\sigma_{\min}$ & $10^{-5}$ & flow-matching schedule floor \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+\subsection{Velocity normalization}
+\label{sec:syn-norm}
+
+The two velocity channels have very different statistics. The $x$-deltas are
+always positive and fairly large, since the trajectory marches steadily in $+x$,
+whereas the $y$-deltas are near zero on average and symmetric, because left turns
+cancel right turns across the dataset. A diffusion model injects \emph{isotropic}
+Gaussian noise, so unequal per-channel scales make the effective noise level
+channel-dependent: a single shared noise magnitude is simultaneously too large
+for the small-scale channel and too small for the large-scale one. Standardizing
+each channel to zero mean and unit variance removes this mismatch.
+
+The statistics are computed once over the whole dataset, per channel, and cached
+to disk so that repeated runs with the same $(\text{dataset size},T,r)$ skip the
+recomputation:
+\begin{equation}
+\mu = \frac{1}{NT}\sum_{n,t} v^{(n)}_t \in \mathbb{R}^2,
+\qquad
+\sigma = \Big[\tfrac{1}{NT}\sum_{n,t}\big(v^{(n)}_t-\mu\big)^2\Big]^{1/2}
+\in \mathbb{R}^2.
+\label{eq:syn-stats}
+\end{equation}
+With a small constant $\varepsilon=10^{-8}$ for numerical safety, the forward
+transform applied per channel in the data loader and its exact inverse applied to
+the model's sampled velocities are
+\begin{equation}
+\hat v = \frac{v-\mu}{\sigma+\varepsilon},
+\qquad\qquad
+v = \hat v\,(\sigma+\varepsilon) + \mu.
+\label{eq:syn-norm}
+\end{equation}
+The same $(\sigma+\varepsilon)$ factor appears in both directions, so the round
+trip is exact up to floating point. Because the model always sees standardized
+velocities during training, the diffusion process operates in a space where both
+channels are approximately $\mathcal{N}(0,1)$, matching the isotropic Gaussian
+prior from which the sampler starts. The padded last velocity row (a zero) is
+included in the statistics; with $T=20$ this is a $1/20$ contribution that
+slightly shrinks $\mu$ and $\sigma$ but is harmless and, crucially, identical on
+the normalize and denormalize sides.
+
+A boolean flag (\texttt{output\_normalization}) short-circuits both transforms in
+Equation~\eqref{eq:syn-norm} to the identity. This single toggle is exactly the
+control exercised in the normalization ablation of
+Section~\ref{sec:syn-ablation-norm}. In the production code path the cached
+statistics are replaced by an exponential-moving-average module that maintains
+the same per-channel $(\mu,\sigma)$ and applies the identical formulas, but
+updates them online during training rather than in a one-shot pass; the synthetic
+study uses the dataset-side cached version, and the two are mathematically
+equivalent.
+
+\subsection{Denoiser architecture}
+\label{sec:syn-model}
+
+The denoiser consumes the noised velocity trajectory at diffusion time $t$ and
+predicts a per-step velocity field. Its three inputs are the noisy deltas
+$\hat v_t\in\mathbb{R}^{B\times T\times 2}$, a diffusion timestep $t\in\mathbb{R}^B$
+(one per trajectory, shared across the $T$ points), and a turn scalar (disabled,
+Section~\ref{sec:syn-conditioning}). Two scalars are lifted into embeddings of
+width $D$ (the model's hidden dimension) by a sinusoidal positional encoding
+followed by a two-layer MLP: a \emph{diffusion-time} embedding
+$e_{\text{time}}\in\mathbb{R}^{B\times D}$, broadcast to all timesteps, and a
+\emph{frame-index} embedding $e_{\text{frame}}\in\mathbb{R}^{T\times D}$ computed
+from the normalized index $\text{arange}(T)/T$ and broadcast across the batch.
+The frame embedding is what tells the model \emph{where} along the trajectory
+each point sits; attention itself is permutation-equivariant, so without it the
+model could not order the points.
+
+The per-point input is the concatenation of the noisy velocity, the two
+embeddings, and the (zeroed) turn scalar,
+\begin{equation}
+x_i = \big[\,\underbrace{\hat v_i}_{2},\;
+\underbrace{e_{\text{time}}}_{D},\;
+\underbrace{e_{\text{frame},i}}_{D},\;
+\underbrace{\text{turn}}_{1}\,\big]\in\mathbb{R}^{2+2D+1},
+\label{eq:syn-input}
+\end{equation}
+reshaped to $(B\cdot T,\,2+2D+1)$ and pushed through a pointwise MLP of four
+$\text{Linear}\to\text{Tanh}$ layers that maps each point independently into a
+$D$-dimensional feature. At this stage there is no interaction between timesteps;
+it is a shared per-frame encoder. Temporal mixing is performed by a stack of four
+\texttt{TemporalBlock}s used in a \emph{self-attention} configuration, in which
+the per-point features serve simultaneously as query, key, and value:
+\begin{lstlisting}
+pred_flow = features                       # (B, T, D)
+for layer in self.cross_denoiser:
+    pred_flow = layer(pred_flow, pred_flow, fm_emb)
+\end{lstlisting}
+Each block is a DiT-style transformer block~\cite{dit} with \emph{AdaLN-Zero}
+conditioning. A LayerNorm without affine parameters is applied to the stream; the
+conditioning vector --- here the diffusion-time embedding $e_{\text{time}}$ ---
+is passed through $\text{SiLU}\to\text{Linear}(D,8D)$ to produce eight
+$(B,D)$ modulation vectors (shift, scale, and gate for the query, context, and
+output branches). The final linear is zero-initialized, so each block starts as
+an identity map and learns to deviate from it; this AdaLN-Zero initialization is
+what lets deep diffusion transformers train stably. An 8-head multi-head
+attention lets each timestep gather information from the whole trajectory, the
+result is gated and added back residually, and a feed-forward sub-block
+($\text{Linear}(D,2D)\to\text{GELU}\to\text{Linear}(2D,D)$) is modulated, gated,
+and again added residually. The modulation helper applies
+$x\mapsto x\,(1+\text{scale})+\text{shift}$. After the four blocks, a linear head
+$\text{Linear}(D,2)$ projects each point back to a 2D velocity, giving the
+predicted flow field $\hat u\in\mathbb{R}^{B\times T\times 2}$.
+Figure~\ref{fig:syn-arch} shows the full denoiser.
+
+Because $D$ sets the width of the time and frame embeddings, the per-point MLP,
+the attention embedding, and the feed-forward dimension simultaneously, it is the
+single knob that governs model capacity --- the subject of the first ablation in
+Section~\ref{sec:syn-ablation-width}.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, align=center, inner sep=3pt, minimum height=8mm},
+  inp/.style={box, fill=gray!12},
+  emb/.style={box, fill=blue!8},
+  enc/.style={box, fill=green!10},
+  attn/.style={box, fill=orange!14, minimum width=20mm, minimum height=14mm},
+  head/.style={box, fill=green!18},
+  cond/.style={box, fill=red!10},
+  ar/.style={-{Stealth[length=2mm]}, thick},
+  >={Stealth[length=2mm]}
+]
+% inputs
+\node[inp] (vin) at (0,1.5) {noisy $\hat v$\\$(B,T,2)$};
+\node[inp] (tin) at (0,0) {diff.\ time $t$\\$(B,)$};
+\node[inp] (fin) at (0,-1.5) {frame idx\\$\text{arange}(T)/T$};
+% embeddings
+\node[emb] (temb) at (2.7,0) {time emb.\\$e_{\text{time}}$};
+\node[emb] (femb) at (2.7,-1.5) {frame emb.\\$e_{\text{frame}}$};
+\draw[ar] (tin) -- (temb);
+\draw[ar] (fin) -- (femb);
+% concat + pointwise MLP
+\node[enc] (cat) at (5.3,0.4) {concat\\Eq.~\eqref{eq:syn-input}};
+\node[enc] (mlp) at (5.3,-1.2) {pointwise MLP\\$4\times$ Lin+Tanh};
+\draw[ar] (vin) -- (cat);
+\draw[ar] (temb) -- (cat);
+\draw[ar] (femb) -- (cat);
+\draw[ar] (cat) -- (mlp);
+\node[font=\scriptsize] at (6.55,-0.4) {$(B,T,D)$};
+% temporal blocks
+\node[attn] (tb) at (8.7,-0.4) {$4\times$ Temporal\\self-attention\\(AdaLN-Zero)};
+\draw[ar] (mlp) -- (tb);
+% conditioning
+\node[cond] (cnd) at (8.7,-2.4) {$e_{\text{time}}$ cond.\\SiLU+Linear};
+\draw[ar] (cnd) -- (tb) node[midway, right, font=\scriptsize] {shift/scale/gate};
+\draw[ar] (temb.south) .. controls (3.2,-3.0) and (7.0,-3.0) .. (cnd.south);
+% head
+\node[head] (out) at (11.6,-0.4) {Linear\\$(D{\to}2)$};
+\draw[ar] (tb) -- (out);
+\node[box, fill=orange!8] (flow) at (13.7,-0.4) {flow $\hat u$\\$(B,T,2)$};
+\draw[ar] (out) -- (flow);
+\end{tikzpicture}
+\caption{The flow-matching denoiser. A pointwise MLP encodes each timestep
+independently from the noisy velocity, the diffusion-time embedding, and the
+frame-index embedding; a stack of four DiT-style temporal self-attention blocks
+with AdaLN-Zero conditioning on the diffusion time mixes information across the
+$T$ timesteps; and a linear head outputs the per-step flow-matching velocity
+field. The turn conditioning is plumbed through but zeroed
+(Section~\ref{sec:syn-conditioning}).}
+\label{fig:syn-arch}
+\end{figure}
+
+\subsection{Flow-matching training and sampling}
+\label{sec:syn-flow}
+
+Training uses conditional flow matching~\cite{lipman_fm} with a linear,
+rectified-flow-style interpolation schedule whose coefficients are
+\begin{equation}
+\alpha(t) = 1-t,
+\qquad
+\sigma(t) = \sigma_{\min} + t\,(1-\sigma_{\min}),
+\qquad
+\sigma_{\min} = 10^{-5}.
+\label{eq:syn-schedule}
+\end{equation}
+Given clean normalized velocities $x=\hat v$ and noise
+$\varepsilon\sim\mathcal{N}(0,I)$, the noised sample at diffusion time
+$t\in[0,1)$ is the linear interpolant
+\begin{equation}
+x_t = \alpha(t)\,x + \sigma(t)\,\varepsilon
+    = (1-t)\,x + \big(\sigma_{\min}+t(1-\sigma_{\min})\big)\,\varepsilon,
+\label{eq:syn-forward}
+\end{equation}
+so $x_0 = x$ is clean data and $x_1\approx\varepsilon$ is essentially pure noise.
+The diffusion time is drawn uniformly per trajectory, $t\sim\mathcal{U}[0,1)$. The
+regression target is the time-derivative of the interpolation path, which for the
+schedule in Equation~\eqref{eq:syn-schedule} reduces to a constant-coefficient
+combination of the data and the noise,
+\begin{equation}
+u_t = \dot\alpha(t)\,x + \dot\sigma(t)\,\varepsilon
+    = x - (1-\sigma_{\min})\,\varepsilon,
+\label{eq:syn-target}
+\end{equation}
+and the model is trained to regress it with a plain mean-squared error averaged
+over all batch elements, timesteps, and channels,
+\begin{equation}
+\mathcal{L} = \big\lVert\, f_\theta(x_t,t) - u_t \,\big\rVert_2^2 .
+\label{eq:syn-loss}
+\end{equation}
+The corresponding inner loop is compact:
+\begin{lstlisting}
+t = torch.rand(B, device=deltas.device)
+noisy_deltas, noise = self.add_noise(deltas, t)          # noising x_t
+pred_v = self.forward(turn, noisy_deltas, t)
+target = self.A(t) * deltas + self.B(t) * noise          # target u_t
+loss = ((pred_v - target) ** 2).mean()                   # MSE loss
+\end{lstlisting}
+Unlike the later image-conditioned model, which reserves a context prefix, the
+loss here is taken over all $T$ points.
+
+\paragraph{Sampling.}
+Generation integrates the learned ordinary differential equation
+$\mathrm{d}x/\mathrm{d}t = f_\theta(x_t,t)$ backward from $t=1$ (noise) to $t=0$
+(data) with a first-order Euler scheme over $20$ uniform steps:
+\begin{lstlisting}
+sampled = torch.randn(B, T, 2)                # x at t = 1
+t_steps = torch.linspace(1, 0, num_steps + 1)
+for i in range(num_steps):
+    pred_v = self.forward(turn, sampled, t_steps[i].repeat(B))
+    dt = t_steps[i] - t_steps[i + 1]          # > 0
+    sampled = sampled + pred_v * dt
+\end{lstlisting}
+The integrated velocities are then denormalized by the inverse of
+Equation~\eqref{eq:syn-norm} and integrated into positions by a cumulative sum
+seeded at the origin (the synthetic experiment uses no ground-truth context
+prefix),
+\begin{equation}
+\hat p_0 = 0,
+\qquad
+\hat p_{t} = \hat p_{t-1} + v_{t-1},
+\qquad t=1,\dots,T-1.
+\label{eq:syn-cumsum}
+\end{equation}
+This cumulative sum is precisely where any per-velocity error compounds: a small
+bias in $\mathrm{d}x$ or $\mathrm{d}y$ accumulates over the $20$-step integration,
+which is why endpoint scatter, rather than local path roughness, is the most
+sensitive indicator of sample quality in the figures that follow.
+
+\subsection{Conditioning is disabled by design}
+\label{sec:syn-conditioning}
+
+A detail essential for interpreting the results is that the turn parameter is
+zeroed inside the forward pass before it can influence the network. Although
+\texttt{turn} is plumbed through the input concatenation of
+Equation~\eqref{eq:syn-input}, it carries no information, so the model is in
+effect an \emph{unconditional} generator of trajectories. Three consequences
+follow. The model cannot, and should not, map a specific turn value to a specific
+endpoint. The right evaluation question is therefore whether the \emph{set} of
+generated trajectories covers the same fan-shaped distribution as the ground
+truth. And in the figures, the colour of a generated curve --- assigned by sample
+index --- is not expected to match the same-coloured ground-truth curve; only the
+overall envelope should agree. This choice keeps the synthetic study focused on
+the one property we need to trust before scaling up: that the flow-matching
+transformer reproduces a target trajectory \emph{distribution}.
+
+\subsection{Ablations}
+\label{sec:syn-ablations}
+
+All results below are produced by the same evaluation harness, which loads a
+trained checkpoint, samples a batch of trajectories at turn values swept
+uniformly with $\text{linspace}(0,1,N)$, denormalizes and integrates them, and
+draws the ground truth and the generated samples side by side. Start points are
+drawn as circles, endpoints as squares, and the origin as a star; colour encodes
+the swept turn index from blue to red. Recall from
+Section~\ref{sec:syn-conditioning} that the model is unconditional, so colour
+correspondence across the two panels is not expected --- coverage of the fan is
+what matters.
+
+\subsubsection{Model capacity}
+\label{sec:syn-ablation-width}
+
+We first vary the single capacity knob $D$, comparing $D=8$ against $D=16$ with
+the rest of the configuration fixed (four temporal blocks, $5000$ training
+steps). The results are shown in Figure~\ref{fig:syn-width}. Already at $D=8$ the
+model recovers the qualitative structure of the target: a shared straight stem
+out of the origin, a left/right fan, and endpoints clustered near the unit arc
+around $x\approx0.9$--$1.0$. The fan is somewhat ragged --- a few endpoints fall
+short of the arc and the angular spacing of generated curves is uneven --- but the
+envelope is clearly correct. Doubling the width to $D=16$ produces a visibly
+cleaner and more evenly spread fan: the straight initial stem is reproduced more
+faithfully, individual curves are smoother, and the endpoint cloud hugs the arc
+more tightly with fewer stragglers. The extra capacity mainly buys smoother
+per-step velocities --- and hence less cumulative-sum drift --- together with
+better coverage of the extreme turns.
+
+\begin{figure}[tbp]
+\centering
+\begin{subfigure}{\textwidth}
+  \centering
+  \includegraphics[width=0.95\linewidth]{../pictures/trajectory_comparison_8h_4layers_5000.png}
+  \caption{$D=8$}
+  \label{fig:syn-width-8}
+\end{subfigure}
+
+\vspace{0.8em}
+
+\begin{subfigure}{\textwidth}
+  \centering
+  \includegraphics[width=0.95\linewidth]{../pictures/trajectory_comparison_16h_4layers_5000_steps.png}
+  \caption{$D=16$}
+  \label{fig:syn-width-16}
+\end{subfigure}
+\caption{Effect of hidden width $D$ (ground truth, left panel of each pair;
+generated samples, right panel), with four temporal blocks and $5000$ training
+steps. The narrower $D=8$ model already captures the fan but leaves a ragged,
+unevenly spaced envelope with some short endpoints; the wider $D=16$ model
+produces smoother curves and a tighter endpoint cloud on the unit arc. Both
+recover the correct distribution, indicating that the task is learnable even at
+small capacity, with $D=16$ a sensible default.}
+\label{fig:syn-width}
+\end{figure}
+
+The takeaway is that capacity helps but with diminishing returns: even $D=8$
+learns the task, while $D=16$ is a good default for this synthetic problem.
+Table~\ref{tab:syn-ablation} summarizes the comparison.
+
+\subsubsection{Velocity normalization}
+\label{sec:syn-ablation-norm}
+
+The second ablation toggles \texttt{output\_normalization}, i.e.\ whether the
+transforms of Equation~\eqref{eq:syn-norm} are applied or replaced by the
+identity. With normalization on, the model trains and samples in standardized
+velocity space; with it off, the model sees raw velocities directly and the
+denormalization step is a no-op. The comparison is shown in
+Figure~\ref{fig:syn-norm}. With normalization, generated trajectories are smooth,
+remain within a sensible bounding box ($x\lesssim1.0$), and the endpoint cloud
+forms a recognizable arc covering the full left-to-right fan; there is scatter,
+as expected from an unconditional model, but no gross scale errors and no runaway
+paths. Without normalization the samples are markedly wavier and less controlled:
+several trajectories overshoot to $x\approx1.2$, beyond the unit-radius ground
+truth, individual paths show kinks rather than smooth arcs, and the endpoint
+cloud is more diffuse.
+
+\begin{figure}[tbp]
+\centering
+\begin{subfigure}{\textwidth}
+  \centering
+  \includegraphics[width=0.95\linewidth]{../pictures/trajectory_comparison_with_norm.png}
+  \caption{with normalization}
+  \label{fig:syn-norm-on}
+\end{subfigure}
+
+\vspace{0.8em}
+
+\begin{subfigure}{\textwidth}
+  \centering
+  \includegraphics[width=0.95\linewidth]{../pictures/trajectory_comparison_without_norm.png}
+  \caption{without normalization}
+  \label{fig:syn-norm-off}
+\end{subfigure}
+\caption{Effect of per-channel velocity normalization. With normalization (top)
+the generated trajectories are smooth and bounded, with an arc-like endpoint
+cloud; without it (bottom) the samples are wavy and kinked, overshoot to
+$x\approx1.2$, and scatter their endpoints. The isotropic diffusion prior is
+mismatched to the raw channel scales, so the model wastes capacity on scale
+rather than shape and the cumulative-sum integration amplifies the residual
+per-step error into endpoint overshoot.}
+\label{fig:syn-norm}
+\end{figure}
+
+The cause is exactly the channel-scale mismatch described in
+Section~\ref{sec:syn-norm}. The diffusion prior is isotropic $\mathcal{N}(0,I)$,
+but the raw $x$-velocity has a substantially larger scale than the raw
+$y$-velocity, so a single shared noise level is too large for one channel and too
+small for the other. The model spends capacity modelling the scale instead of the
+shape, and the Euler-integrated cumulative sum of
+Equation~\eqref{eq:syn-cumsum} amplifies the residual per-step errors into
+endpoint overshoot. Per-channel normalization is therefore clearly beneficial:
+it is cheap (two 2-vectors), exactly invertible, and it removes the mismatch that
+otherwise degrades both smoothness and endpoint accuracy. This is the empirical
+justification for keeping normalization in the production pipeline, including the
+online exponential-moving-average variant noted in Section~\ref{sec:syn-norm}.
+
+\begin{table}[t]
+\centering
+\caption{Qualitative summary of the synthetic ablations. All runs use four
+temporal blocks and $5000$ training steps; coverage refers to how well the
+generated set spans the ground-truth fan.}
+\label{tab:syn-ablation}
+\begin{tblr}{
+  colspec={llll},
+  row{1}={font=\bfseries},
+}
+\toprule
+Setting & Path smoothness & Endpoint cloud & Scale errors \\
+\midrule
+$D=8$, norm   & minor wobble & moderate spread on arc & none \\
+$D=16$, norm  & smooth       & tight on arc           & none \\
+\midrule
+with norm     & smooth       & arc-like, $x\lesssim1.0$ & none \\
+without norm  & wavy, kinked & diffuse, $x$ up to $\sim1.2$ & overshoot \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+\subsection{Summary}
+\label{sec:syn-summary}
+
+The synthetic study validates the generative core of the trajectory probe on a
+problem with a known closed-form answer. The data are cubic B\'ezier curves from
+the origin to a point on a $60^\circ$ unit arc, parameterized by a turn scalar and
+represented as zero-padded first-difference velocities. Those velocities are
+standardized per channel with cached statistics and inverted exactly at sampling
+time. The denoiser is a pointwise MLP encoder feeding a four-layer DiT-style
+temporal self-attention stack with AdaLN-Zero conditioning on the diffusion time,
+with a linear head emitting a per-step flow-matching velocity field. Training is
+linear-schedule conditional flow matching with an MSE objective against the field
+$x-(1-\sigma_{\min})\varepsilon$, and sampling is $20$-step Euler integration from
+noise to data followed by a cumulative sum into positions. With the turn
+conditioning intentionally disabled, evaluation measures distribution coverage
+rather than per-turn accuracy. Two ablations confirm the design: wider hidden
+size yields a cleaner, better-spread fan with tighter endpoints, and per-channel
+velocity normalization is essential, since disabling it produces wavy,
+overshooting trajectories with diffuse endpoints. Together these results show
+that the flow-matching temporal-transformer recipe learns smooth, well-distributed
+trajectories on a controlled problem, clearing the way for adding image
+conditioning on real nuPlan data with the same architecture.

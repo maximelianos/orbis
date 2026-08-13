@@ -147,3 +147,20 @@ Frame format is identical between the two datasets — same keys, same structure
 
 num_predictions doesn't play any role in the blocks.py - TemporalBlock. Remove it.
 In exp_navsim model, remove the restriction on episode length, leave only the context size. Just load the episode as it is, and predict all steps that are not in context. You'll need to change the model.
+
+# 30.07.2026
+
+Project aim: prove that the Orbis VAE + world model have learned representations that
+contain information about ego-motion and trajectory planning.
+Check if an attentive probe of a small size can decode the future trajectory from the WM latents.
+Using diffusion, recover a distribution of future trajectories.
+I will use nuReasoning dataset to train and test the attentive probe.
+
+Check the nuReasoning website and tell
+1) what's the duration of clips
+2) how many clips, how is the dataset structured
+3) do the clips have associated 2D trajectories
+
+https://huggingface.co/datasets/qixuewei/nuReasoning
+
+Suggest 3 experiments that I have not done so far (read report). Write in docs/future-plan.md.

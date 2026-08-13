@@ -1,0 +1,330 @@
+\section{Related Work}
+\label{sec:related}
+
+The project sits at the intersection of three lines of research:
+\emph{generative modelling} through diffusion and flow matching, the
+\emph{diffusion transformer} architecture that has become the workhorse of
+modern generative models, and \emph{world models} for autonomous driving and
+navigation. Figure~\ref{fig:taxonomy} organizes the most relevant works along
+these axes. We then treat each line in turn: Section~\ref{sec:diffusion-theory}
+develops the theory of diffusion and flow matching, Section~\ref{sec:dit}
+describes the diffusion transformer, and Section~\ref{sec:world-models} reviews
+world models from the general concept through to the driving and navigation
+models that motivate our probe.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  grow=down,
+  level distance=12mm,
+  root/.style={draw, rounded corners, fill=gray!15, align=center, inner sep=4pt},
+  cat/.style={draw, rounded corners, fill=blue!10, align=center, inner sep=3pt},
+  leaf/.style={draw, rounded corners, fill=green!10, align=center, inner sep=3pt, font=\scriptsize},
+  ar/.style={-{Stealth[length=2mm]}, semithick},
+  >={Stealth[length=2mm]}
+]
+\node[root] (root) at (0,0) {Generative \& predictive models\\for driving};
+
+% three category nodes
+\node[cat] (gen) at (-5.3,-1.4) {Generative\\objectives};
+\node[cat] (arch) at (0,-1.4) {Architecture};
+\node[cat] (wm) at (5.3,-1.4) {World models};
+
+\draw[ar] (root) -- (gen);
+\draw[ar] (root) -- (arch);
+\draw[ar] (root) -- (wm);
+
+% generative leaves
+\node[leaf] (diff) at (-6.6,-3.0) {Diffusion\\(DDPM)~\cite{ho_ddpm}};
+\node[leaf] (fm) at (-4.5,-3.0) {Flow matching /\\rectified flow~\cite{lipman_fm}};
+\node[leaf] (disc) at (-6.6,-4.4) {Masked / discrete\\token models~\cite{maskgit}};
+\node[leaf] (vae) at (-4.5,-4.4) {(VQ-)VAE\\tokenizers~\cite{vqgan}};
+\draw[ar] (gen) -- (diff);
+\draw[ar] (gen) -- (fm);
+\draw[ar] (gen) -- (disc);
+\draw[ar] (gen) -- (vae);
+
+% architecture leaves
+\node[leaf] (unet) at (0,-3.0) {U-Net\\backbones};
+\node[leaf] (dit) at (0,-4.1) {Diffusion\\transformer (DiT)~\cite{dit}};
+\node[leaf] (stdit) at (0,-5.2) {Spatio-temporal\\DiT / CDiT~\cite{nwm}};
+\draw[ar] (arch) -- (unet);
+\draw[ar] (arch) -- (dit);
+\draw[ar] (arch) -- (stdit);
+
+% world model leaves
+\node[leaf] (drive) at (6.7,-3.0) {Driving WMs:\\GAIA, Vista,\\GEM};
+\node[leaf] (orbis) at (4.3,-3.0) {\textbf{Orbis}~\cite{orbis}};
+\node[leaf] (nav) at (6.7,-4.6) {Navigation\\WM (NWM)~\cite{nwm}};
+\node[leaf] (game) at (4.3,-4.6) {Game / sim WMs:\\DIAMOND,\\GameNGen};
+\draw[ar] (wm) -- (drive);
+\draw[ar] (wm) -- (orbis);
+\draw[ar] (wm) -- (nav);
+\draw[ar] (wm) -- (game);
+
+% cross link: Orbis combines flow matching (a generative objective) with the
+% spatio-temporal DiT (an architecture); routed below the tree to avoid nodes
+\draw[ar, dashed, red!60] (orbis.south) .. controls (3.1,-3.6) and (2.3,-4.6) .. (stdit.east);
+\draw[ar, dashed, red!60] (orbis.south) .. controls (2.9,-4.2) and (-3.6,-7.2) .. (fm.south);
+\end{tikzpicture}
+\caption{A taxonomy of the works reviewed in this section. Driving world models
+can be classified by their \emph{generative objective} (continuous diffusion /
+flow matching vs.\ discrete masked-token modelling), their \emph{architecture}
+(convolutional U-Net vs.\ transformer-based DiT variants), and their
+\emph{role} (open-world driving generation, navigation planning, or game/sim
+emulation). Dashed red edges highlight that Orbis combines a flow-matching
+objective with a spatio-temporal diffusion transformer.}
+\label{fig:taxonomy}
+\end{figure}
+
+\subsection{Diffusion and flow matching}
+\label{sec:diffusion-theory}
+
+\paragraph{Denoising diffusion probabilistic models.}
+Diffusion models~\cite{ho_ddpm} define a generative process by reversing a
+fixed forward process that gradually corrupts data into noise. Given a data
+sample $\mathbf{x}_0$, the forward process produces a sequence of increasingly
+noisy variables $\mathbf{x}_1,\dots,\mathbf{x}_T$ according to a Gaussian
+transition with a predefined variance schedule $\{\alpha_t\}$. A convenient
+property is that any noise level can be sampled in closed form,
+\begin{equation}
+\mathbf{x}_t = \sqrt{\bar{\alpha}_t}\,\mathbf{x}_0
++ \sqrt{1-\bar{\alpha}_t}\,\boldsymbol{\epsilon},
+\qquad \boldsymbol{\epsilon}\sim\mathcal{N}(0,I),
+\end{equation}
+where $\bar{\alpha}_t=\prod_{s\le t}\alpha_s$. The model learns the reverse
+process $p_\theta(\mathbf{x}_{t-1}\mid\mathbf{x}_t)$, which gradually denoises a
+pure-noise sample back to data. Training reduces to a simple regression in
+which a network $\boldsymbol{\epsilon}_\theta$ predicts the noise that was added,
+\begin{equation}
+\mathcal{L}_{\text{simple}}(\theta)
+= \mathbb{E}_{t,\mathbf{x}_0,\boldsymbol{\epsilon}}
+\big[\,\lVert \boldsymbol{\epsilon}_\theta(\mathbf{x}_t,t)
+- \boldsymbol{\epsilon} \rVert_2^2\,\big].
+\end{equation}
+New samples are generated by initializing
+$\mathbf{x}_T\sim\mathcal{N}(0,I)$ and iterating the learned reverse
+transitions. \emph{Classifier-free guidance}~\cite{ho_ddpm} is the standard
+mechanism for conditional generation: the model is trained both with and
+without the conditioning $c$ (the latter by dropping $c$ for a learned null
+embedding), and at sampling time the two predictions are extrapolated,
+$\hat{\boldsymbol{\epsilon}}(\mathbf{x}_t,c)
+=\boldsymbol{\epsilon}_\theta(\mathbf{x}_t,\varnothing)
++ s\big(\boldsymbol{\epsilon}_\theta(\mathbf{x}_t,c)
+-\boldsymbol{\epsilon}_\theta(\mathbf{x}_t,\varnothing)\big)$,
+with guidance scale $s>1$ trading diversity for fidelity to the condition.
+
+\paragraph{Flow matching.}
+Flow matching~\cite{lipman_fm} reframes generation as learning a continuous
+\emph{velocity field} that transports a simple prior distribution to the data
+distribution along a probability path, rather than reversing a discrete
+noising chain. The simplest and most widely used instance defines a linear
+(``rectified'') path between a data point $\mathbf{x}$ and a noise sample
+$\boldsymbol{\epsilon}$,
+\begin{equation}
+\mathbf{x}^{\tau} = (1-\tau)\,\mathbf{x} + \tau\,\boldsymbol{\epsilon},
+\qquad \tau\in[0,1],
+\end{equation}
+whose time-derivative is the constant target velocity
+$\tfrac{d\mathbf{x}^{\tau}}{d\tau}=\boldsymbol{\epsilon}-\mathbf{x}$. The model
+$\mathbf{v}_\theta$ is trained to regress this velocity,
+\begin{equation}
+\mathcal{L}_{\text{FM}}(\theta)
+= \mathbb{E}_{\tau,\mathbf{x},\boldsymbol{\epsilon}}
+\big[\,\lVert \mathbf{v}_\theta(\mathbf{x}^{\tau},\tau)
+- (\boldsymbol{\epsilon}-\mathbf{x}) \rVert_2^2\,\big],
+\label{eq:fm-loss}
+\end{equation}
+and samples are produced by integrating the ordinary differential equation
+$\tfrac{d\mathbf{x}^{\tau}}{d\tau}=\mathbf{v}_\theta(\mathbf{x}^{\tau},\tau)$
+from the prior at $\tau=1$ back to the data manifold at $\tau=0$. Flow matching
+can be seen as a continuous-time generalization of diffusion: it shares the
+same denoising intuition but offers straighter transport paths, which permit
+fewer integration steps and tend to be more stable to train. This is the
+objective Orbis uses for its continuous world model
+(Equations~\eqref{eq:fm-forward-intro}--\eqref{eq:fm-loss-intro}), and it is a
+natural choice for the trajectory-generation head of our probe because the 2D
+trajectory space is low-dimensional and benefits from the short sampling
+schedules that flow matching enables.
+
+\paragraph{Continuous vs.\ discrete generation.}
+A recurring design axis, made explicit by Orbis, is whether to model a
+continuous latent (with diffusion or flow matching) or a discrete sequence of
+codebook tokens (with autoregressive or masked generative
+modelling~\cite{maskgit}). Discrete token models inherit the machinery of large
+language models and can be attractive for long rollouts, but Orbis finds that
+on driving video the continuous, flow-matching formulation is less brittle to
+design choices and yields markedly better long-horizon predictions. Both
+families rely on a (VQ-)VAE-style tokenizer~\cite{vqgan} to map pixels to a
+compact latent; the hybrid Orbis tokenizer supports both at once.
+
+\subsection{The diffusion transformer}
+\label{sec:dit}
+
+Early diffusion models used convolutional U-Net backbones. The Diffusion
+Transformer (DiT)~\cite{dit} showed that the U-Net inductive bias is not
+essential: a standard transformer operating on latent patches matches or
+exceeds U-Nets and, importantly, \emph{scales} predictably --- sample quality
+(FID) improves smoothly as the model's compute (Gflops), through either depth,
+width, or token count, increases. DiT operates in the latent space of a
+pretrained VAE: the spatial latent is ``patchified'' into a sequence of tokens,
+processed by a stack of transformer blocks, and decoded back into a noise (and
+covariance) prediction. The key design finding is how to inject conditioning
+--- the diffusion timestep $t$ and any class or context signal $c$. Among
+in-context tokens, cross-attention, and adaptive layer normalization (AdaLN),
+the \emph{adaLN-Zero} variant works best: the conditioning vector regresses
+per-block scale and shift parameters $(\gamma,\beta)$ for the layer norms and an
+additional residual scale $\alpha$ that is zero-initialized so that each block
+starts as the identity. This is precisely the conditioning mechanism Orbis
+adopts to inject the diffusion time and the optional ego-motion signal, and it
+is the most compute-efficient of the three.
+
+Figure~\ref{fig:dit} sketches the block at a general level. A token sequence
+enters; AdaLN modulates a multi-head self-attention sub-layer and then a
+feed-forward (MLP) sub-layer; residual connections, scaled by $\alpha$, wrap
+each. Stacking $N$ such blocks and conditioning every block on $(t,c)$ gives the
+full backbone. Driving and navigation world models extend this design along the
+\emph{temporal} axis. Orbis interleaves spatial and temporal attention within
+each block (an STDiT), so that a token attends both to other patches in the
+same frame and to the same region across frames. The navigation world model
+NWM~\cite{nwm} instead proposes a Conditional Diffusion Transformer (CDiT) that
+restricts expensive self-attention to the target frame and uses cross-attention
+to read context frames, making the cost \emph{linear} in the number of context
+frames rather than quadratic --- a choice that lets it scale to a billion
+parameters. The general-level scheme in Figure~\ref{fig:dit} is the common
+ancestor of all of these variants.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, align=center, inner sep=3pt, minimum height=7mm},
+  op/.style={box, fill=blue!10},
+  attn/.style={box, fill=orange!18},
+  mlp/.style={box, fill=green!14},
+  norm/.style={box, fill=gray!12},
+  cond/.style={box, fill=red!10},
+  add/.style={draw, circle, inner sep=1pt, fill=white},
+  ar/.style={-{Stealth[length=2mm]}, semithick},
+  >={Stealth[length=2mm]}
+]
+% main column
+\node[box, fill=gray!8] (in) at (0,0) {Input tokens\\(patchified latent)};
+\node[norm] (ln1) at (0,1.3) {Layer Norm};
+\node[attn] (mha) at (0,2.7) {Multi-Head\\Self-Attention};
+\node[add] (a1) at (0,4.0) {$+$};
+\node[norm] (ln2) at (0,5.3) {Layer Norm};
+\node[mlp] (mlpb) at (0,6.7) {Feed-Forward\\(MLP)};
+\node[add] (a2) at (0,8.0) {$+$};
+\node[box, fill=gray!8] (out) at (0,9.3) {Output tokens};
+
+\draw[ar] (in) -- (ln1);
+\draw[ar] (ln1) -- (mha);
+\draw[ar] (mha) -- (a1);
+\draw[ar] (a1) -- (ln2);
+\draw[ar] (ln2) -- (mlpb);
+\draw[ar] (mlpb) -- (a2);
+\draw[ar] (a2) -- (out);
+% residuals
+\draw[ar] (in.east) -- ++(1.7,0) |- (a1.east) node[pos=0.07, above, font=\scriptsize] {residual};
+\draw[ar] (a1.west) -- ++(-1.7,0) |- (a2.west) node[pos=0.25, left, font=\scriptsize] {residual};
+
+% conditioning column
+\node[cond, align=center] (cond) at (4.6,2.7) {Conditioning\\$t$ (diffusion step)\\$c$ (context / action)};
+\node[cond] (mlp2) at (4.6,4.6) {MLP};
+\draw[ar] (cond) -- (mlp2);
+% adaln scale/shift/scale arrows: fan out from the MLP to the left column
+\draw[ar, dashed, red!70] (mlp2.west) .. controls (3.0,4.7) and (2.0,5.3) .. (ln2.east)
+  node[pos=0.62, above, font=\scriptsize] {$\gamma_2,\beta_2$};
+\draw[ar, dashed, red!70] (mlp2.west) -- (a1.east)
+  node[pos=0.55, above, font=\scriptsize] {$\alpha_1$};
+\draw[ar, dashed, red!70] (mlp2.west) .. controls (2.7,3.1) and (1.9,1.6) .. (ln1.east)
+  node[pos=0.62, right, font=\scriptsize] {$\gamma_1,\beta_1$};
+\node[font=\scriptsize, align=center, red!70] at (4.6,1.3) {AdaLN-Zero:\\regress $(\gamma,\beta,\alpha)$};
+
+\node[font=\small\bfseries, align=center] at (0,10.2) {DiT block ($\times N$)};
+\end{tikzpicture}
+\caption{The diffusion transformer (DiT) block at a general level. Patchified
+latent tokens pass through a multi-head self-attention sub-layer and a
+feed-forward (MLP) sub-layer, each wrapped in a residual connection. The
+diffusion timestep $t$ and the conditioning $c$ are injected through adaptive
+layer normalization: a small MLP regresses per-sub-layer scale/shift
+$(\gamma,\beta)$ and a residual scale $\alpha$ (zero-initialized, ``adaLN-Zero'').
+Stacking $N$ blocks gives the backbone; driving models such as Orbis add
+temporal attention (STDiT) and navigation models such as NWM use a
+context cross-attention (CDiT) variant. This scheme is intentionally
+schematic --- the detailed per-block diagram is left to be refined separately.}
+\label{fig:dit}
+\end{figure}
+
+\subsection{World models}
+\label{sec:world-models}
+
+\paragraph{The world-model concept.}
+A world model is a learned model of an environment's dynamics: given the
+current state (or a history of observations) and optionally an action, it
+predicts the next state, and possibly a reward. The motivation is that an agent
+equipped with such a model can ``imagine'' the outcome of candidate actions
+internally, which supports sample-efficient reinforcement learning,
+representation learning, and planning. Historically, world models were studied
+in games and other simulated environments, where the dynamics are clean and
+unlimited interaction is available. The recent surge of high-quality video
+generative models has made it feasible to learn world models directly from raw
+video of the real world, turning the predictive model into a learned simulator.
+In the driving domain this is especially attractive because raw front-camera
+video is abundant and unlabeled, so a video world model can sidestep much of the
+manual perception engineering that conventional stacks require.
+
+\paragraph{Popular video and driving world models.}
+Several lines of work have established video prediction as a viable substrate
+for world modelling. In games and simulation, DIAMOND and GameNGen use
+diffusion models to emulate game engines such as Atari and Doom from frames and
+actions. For driving, GAIA-1 was an influential early demonstration of
+controllable future generation conditioned on action and text, using a discrete
+token model. Diffusion-based driving models including Vista and GEM fine-tune
+general-purpose pretrained video diffusion backbones (such as Stable Video
+Diffusion) to produce high-resolution, high-frame-rate rollouts of up to around
+fifteen seconds, and DrivingWorld further extends rollout coherence. Orbis
+positions itself critically against this trend: it observes that these large,
+pretrained-backbone models degrade quickly on long horizons and on demanding
+maneuvers such as turns, often stopping prematurely or drifting into unrealistic
+paths. To quantify this, Orbis introduces a distribution-level, trajectory-based
+evaluation --- mapping generated videos to pose sequences and measuring realism
+and coverage with precision/recall, Fréchet distance, and average displacement
+error --- since standard video metrics like FVD are insensitive to scene
+dynamics and ego-motion. This evaluation philosophy is directly relevant to our
+probe, which likewise assesses the \emph{distribution} of trajectories rather
+than a single point estimate.
+
+\paragraph{Orbis.}
+Orbis~\cite{orbis} (described in detail in Section~\ref{sec:orbis}) contributes
+along two axes that matter here. First, it is trained from raw video only and is
+far more economical than its competitors --- $469$M parameters and $280$ hours
+of video versus the thousands of hours and larger backbones used elsewhere ---
+which suggests the learned latent is an efficient, general representation rather
+than a memorized one. Second, its hybrid tokenizer enables a controlled
+comparison between continuous and discrete world models, concluding in favour of
+the continuous flow-matching model. For this report, the relevant consequence is
+that Orbis offers a compact, well-trained, raw-video latent whose informativeness
+for downstream driving tasks is an open and interesting question --- precisely
+what the attentive diffusion probe is designed to measure.
+
+\paragraph{Navigation world models.}
+The Navigation World Model (NWM)~\cite{nwm} makes the planning use of a video
+world model explicit, which is conceptually the closest precedent to our study.
+NWM is a controllable video generation model trained on egocentric video of
+human and robotic agents together with their navigation actions
+$(\Delta x,\Delta y,\Delta\phi)$ and a time shift. It uses the CDiT architecture
+mentioned in Section~\ref{sec:dit} to autoregressively predict future latent
+states given past states and actions. Crucially, after training, NWM is used for
+\emph{planning}: it simulates candidate action sequences and scores how well the
+resulting imagined future reaches a goal, either optimizing actions from scratch
+in a model-predictive-control loop or ranking trajectories proposed by an
+external policy. This demonstrates the broader thesis behind our work --- that
+the representation and rollouts of a video world model carry actionable
+information about future motion. Where NWM \emph{generates and scores} full
+future videos to plan, our probe takes the complementary, lighter-weight route:
+it reads the world model's latent directly and learns a small diffusion head to
+predict the future 2D trajectory, testing how much of that planning-relevant
+information is already linearly accessible in the frozen Orbis latent.

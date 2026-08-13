@@ -64,6 +64,8 @@ dataset. To switch:
 | `data/navsim_long.py`  | `NavsimLongDataset` (navhard): episode = longest scene of a meta pickle; re-exports the shared helpers |
 | `data/navtrain_long.py`| `NavtrainLongDataset` (navtrain): episode = a scene's longest on-disk-present frame run; builds+caches an episode index |
 | `draw.py`          | `draw_episode(batch, i)` — field-driven: BEV + 5 evenly spaced cameras + trajectory |
+| `data/bev_extract.py` | `extract_bev(long_ds, i)` — map BEV context (nuPlan `map_api` + one navsim `Frame`) and GT path, built straight from the raw log frames (no sensor blobs, no `SceneLoader`) |
+| `draw_bev.py`      | `draw_bev_distribution(ax, bev, gt, preds)` — map + agents with the whole sampled trajectory distribution on top |
 | `visualize_dataset.py` | stats page (episode count + length distribution) + episode pages → PDF |
 | `encoder_io.py`    | one place to load the frozen tokenizer and encode/decode |
 | `cache_latents.py` | encode every episode → one HDF of per-frame latents in `data/` |
@@ -97,6 +99,13 @@ turn angle along the trajectory) to TensorBoard, and prints only `val/loss`
 (= MSE) on the command line. `test_model.py` reuses the same validation set to
 render the predicted-trajectory PDF.
 
+Its top row is: first context view, last context view, and the **map BEV with the
+predicted distribution** (`data/bev_extract.py` extracts the BEV + GT path,
+`draw_bev.py` draws the samples on it). The BEV is rendered in the ego frame of
+episode frame 0, which is exactly the frame `batch["trajectory"]` lives in for the
+deterministic (start=0) validation windows — so no transform is needed. It needs
+`NUPLAN_MAPS_ROOT` / `NUPLAN_MAP_VERSION`; pass `--no-bev` to drop the panel.
+
 ## Commands
 
 ```bash
@@ -104,6 +113,8 @@ render the predicted-trajectory PDF.
 python -m exp_navsim.visualize_dataset --config exp_navsim/config.yaml --num 5
 python -m exp_navsim.data.cache_latents --config exp_navsim/config.yaml   # first run builds the navtrain index
 python -m exp_navsim.test_decode       --config exp_navsim/config.yaml --num 3
+python -m exp_navsim.data.bev_extract  --config exp_navsim/config.yaml --num 3   # BEV extraction smoke check
+python -m exp_navsim.draw_bev          --config exp_navsim/config.yaml --num 3   # BEV drawing smoke check -> PDF
 python train_nuplan.py -c exp_navsim/config.yaml --max_steps 20000 --logdir logs_navsim
 python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 1000
 python -m exp_navsim.test_model --config exp_navsim/config.yaml \

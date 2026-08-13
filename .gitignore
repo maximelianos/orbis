@@ -38,6 +38,10 @@ data/cache*
 ./logs_tk
 ./logs_wm
 navsim/
+# ignore symlink
 navsim
 data/navtrain_latents
 data/navtrain_episode_index.pkl
+
+nuReasoning/
+nuReasoning

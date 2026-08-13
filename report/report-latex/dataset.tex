@@ -1,0 +1,227 @@
+\section{Datasets and Benchmarks}
+\label{sec:datasets}
+
+Evaluating future-trajectory predictions requires both a source of real driving
+data with ground-truth ego motion and a principled way to score predicted
+trajectories. This section describes the two pillars used here: the
+\textbf{nuPlan} dataset, which supplies large-scale real driving logs and
+defines the closed-loop planning task, and the \textbf{NAVSIM} benchmark, which
+provides a reproducible, simulation-aligned scoring protocol built on the
+Predictive Driver Model Score family of metrics. Orbis itself is trained and
+evaluated partly on nuPlan, so anchoring our trajectory study to the same data
+and metrics keeps the results directly comparable.
+
+\subsection{nuPlan}
+\label{sec:nuplan}
+
+nuPlan~\cite{nuplan} is the first large-scale, closed-loop, machine-learning
+planning benchmark for autonomous driving. It comprises roughly $1500$ hours of
+human driving collected in four cities --- Boston, Pittsburgh, Las Vegas, and
+Singapore --- chosen for their contrasting driving cultures (dense casino
+pick-up/drop-off zones and eight-lane intersections in Las Vegas, double-parking
+in Boston, idiosyncratic left-turn precedence in Pittsburgh, and left-hand
+traffic in Singapore). Each city ships with a semantic map and an efficient map
+query API, and the logs include lidar point clouds, camera images, localization,
+and steering inputs. Agent trajectories are auto-labeled by an offline
+perception system (PointPillars with CenterPoint detection and non-causal
+tracking) to near-human accuracy, and intervals are tagged with scenario types
+--- merges, lane changes, protected and unprotected turns, interactions with
+pedestrians and cyclists, double-parked vehicles, and so on --- which enables
+scenario-specific evaluation.
+
+The conceptual contribution of nuPlan is the distinction between
+\emph{prediction} and \emph{planning}, and the corresponding move from
+open-loop to closed-loop evaluation. Prediction benchmarks ask for the most
+likely future trajectories of \emph{other} agents and score them with
+displacement metrics (minADE, minFDE, miss rate). Such metrics are ill-suited
+to ego planning for two reasons. First, planning is multi-modal at a high level
+--- at an intersection, turning left and turning right can be equally valid ---
+so penalizing any single predicted trajectory by its $L_2$ distance to the one
+recorded human path is misleading. Second, open-loop scoring ignores
+interaction: whether to continue an overtake or merge back depends on how other
+agents react, which only a closed loop can capture. nuPlan therefore defines
+three tasks of increasing difficulty: \emph{open-loop} (imitate the human
+trajectory, no control), \emph{non-reactive closed-loop} (the planner drives a
+simulated vehicle while other agents replay their recorded tracks), and
+\emph{reactive closed-loop} (other agents are themselves controlled by a
+planning model). A controller tracks the planner's output through a kinematic
+motion model, and the resulting driven trajectory is scored on traffic-rule
+compliance, human-likeness, vehicle dynamics/comfort, and goal achievement.
+
+For our purposes, nuPlan provides the ground-truth future ego trajectories that
+the diffusion probe is trained to predict, the scenario diversity needed to
+study multi-modal behaviour (turns and intersections in particular), and the
+shared evaluation lineage with Orbis, whose nuPlan-turns split is drawn from the
+same source.
+
+\subsection{The NAVSIM benchmark}
+\label{sec:navsim}
+
+While nuPlan defines the closed-loop ideal, running full interactive simulation
+is computationally expensive and, for vision-based end-to-end models, hard to
+make photorealistic. NAVSIM~\cite{navsim} addresses this with
+\emph{pseudo-simulation}: a paradigm that keeps the scalability and determinism
+of open-loop evaluation on real data while recovering much of what closed-loop
+testing measures --- robustness to distribution shift and the mitigation of
+causal confusion. The key idea is to pre-generate, before any evaluation, a set
+of synthetic observations around each real frame using a driving-specialized
+variant of 3D Gaussian Splatting, so that the agent is scored not only on the
+original recorded observation but also on plausible nearby states it might
+encounter.
+
+Concretely, evaluation proceeds in two stages, illustrated conceptually in
+Figure~\ref{fig:navsim}. In \textbf{Stage~1}, the agent predicts a $4$-second
+trajectory from the original real observation; the trajectory is executed in a
+simplified bird's-eye-view simulation with a kinematic bicycle model and an LQR
+controller, and a score plus an endpoint are computed. In \textbf{Stage~2}, the
+same scoring is repeated on synthetic observations whose start points are
+sampled around the human's true endpoint (laterally up to $\pm2$\,m, and
+longitudinally over the physically reachable range, giving more samples for
+faster scenarios). Each Stage-2 observation comes with a plausible heading and
+motion history obtained by matching to real driving data. The Stage-2 scores are
+then combined with a Gaussian weighting based on the proximity of each synthetic
+start point to the Stage-1 predicted endpoint, so that futures the agent is
+actually likely to reach count more heavily:
+\begin{equation}
+s_{\text{combined}} = s_1\cdot\sum_i \hat{w}^{\,i}\,s_2^{\,i},
+\qquad
+\hat{w}^{\,i} = \frac{w^i}{\sum_j w^j},
+\quad
+w^i = \exp\!\Big(-\frac{\lVert x^i - \hat{x}\rVert^2}{2\sigma^2}\Big),
+\end{equation}
+where $\hat{x}$ is the Stage-1 endpoint and $x^i$ the start point of the $i$-th
+synthetic scene. This two-stage design correlates substantially better with
+true closed-loop scores ($R^2=0.8$) than the best open-loop metric
+($R^2=0.7$), while requiring roughly $6\times$ fewer environment interactions
+than full simulation. The public NAVSIM~v2 leaderboard uses a challenging
+\texttt{navhard} split of nuPlan-derived scenes (unprotected turns, dense
+traffic) to standardize submissions.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, align=center, inner sep=3pt, minimum height=8mm},
+  stage/.style={box, fill=blue!8},
+  obs/.style={box, fill=gray!12},
+  synth/.style={box, fill=green!10},
+  score/.style={box, fill=orange!14},
+  ar/.style={-{Stealth[length=2mm]}, semithick},
+  >={Stealth[length=2mm]}
+]
+% Stage 1
+\node[obs] (real) at (0,0) {Real\\observation};
+\node[stage] (ag1) at (2.6,0) {Agent\\(planner)};
+\node[score] (s1) at (5.2,0) {Stage 1:\\BEV sim\\$\to s_1,\hat{x}$};
+\draw[ar] (real) -- (ag1);
+\draw[ar] (ag1) -- (s1) node[midway, above, font=\scriptsize] {4\,s traj.};
+
+% Stage 2 synthetic observations
+\node[synth] (syn1) at (8.0,1.4) {Synthetic obs.\ $x^1$};
+\node[synth] (syn2) at (8.0,0.2) {Synthetic obs.\ $x^2$};
+\node[font=\footnotesize] at (8.0,-0.75) {$\vdots$};
+\node[synth] (syn3) at (8.0,-1.7) {Synthetic obs.\ $x^i$};
+%\node[font=\scriptsize] at (8.0,-2.1) {(3D Gaussian Splatting,\\pre-generated)};
+\draw[ar] (s1) -- (syn1);
+\draw[ar] (s1) -- (syn2);
+\draw[ar] (s1) -- (syn3);
+
+\node[score] (s2) at (11.0,0) {Stage 2:\\score $s_2^{\,i}$\\each scene};
+\draw[ar] (syn1) -- (s2);
+\draw[ar] (syn2) -- (s2);
+\draw[ar] (syn3) -- (s2);
+
+\node[box, fill=red!10] (comb) at (13.6,0) {Combined\\EPDMS\\$s_1\!\cdot\!\sum_i\hat{w}^i s_2^i$};
+\draw[ar] (s2) -- (comb);
+\draw[ar] (s1.south) .. controls (5.2,-3.1) and (13.6,-3.1) .. (comb.south)
+  node[pos=0.5, below, font=\scriptsize] {proximity weights $\hat{w}^i$ to endpoint $\hat{x}$};
+\end{tikzpicture}
+\caption{NAVSIM pseudo-simulation. Stage~1 scores the agent on the real
+observation and records the trajectory endpoint $\hat{x}$. Stage~2 repeats the
+scoring on pre-generated synthetic observations rendered with 3D Gaussian
+Splatting around plausible nearby start points $x^i$. Stage-2 scores are
+combined with a Gaussian proximity weight $\hat{w}^i$ that favours futures close
+to the Stage-1 endpoint, yielding the combined EPDMS. This recovers
+robustness-to-distribution-shift signal without sequential closed-loop
+simulation.}
+\label{fig:navsim}
+\end{figure}
+
+\subsection{PDM and Extended PDM scores}
+\label{sec:pdms}
+
+The metric scored at each NAVSIM stage is the Predictive Driver Model Score
+(PDMS) and its extension EPDMS, formalized in the Hydra-MDP++
+work~\cite{hydra}. Both follow the same template: a product of binary
+\emph{penalty} sub-scores, which can zero out the whole score for a serious
+violation, multiplied by a weighted average of graded \emph{quality}
+sub-scores. The original PDM score is
+\begin{equation}
+\text{PDMS} =
+\underbrace{\text{NC}\cdot\text{DAC}}_{\text{penalties}}
+\cdot
+\underbrace{\frac{5\cdot\text{TTC} + 2\cdot\text{C} + 5\cdot\text{EP}}{12}}_{\text{weighted average}},
+\label{eq:pdms}
+\end{equation}
+where NC is no at-fault collision, DAC is drivable-area compliance, TTC is
+time-to-collision, C is comfort, and EP is ego progress (route progress relative
+to a rule-based reference planner). Because NC and DAC enter multiplicatively, a
+collision or driving off the road drives the score to zero regardless of how
+smooth or progressive the trajectory was.
+
+The Extended PDM Score adds metrics that capture failures the original score
+missed --- traffic-light compliance, lane keeping, driving direction, and a
+longer-horizon comfort term:
+\begin{equation}
+\text{EPDMS} =
+\underbrace{\text{NC}\cdot\text{DAC}\cdot\text{DDC}\cdot\text{TL}}_{\text{penalties}}
+\cdot
+\underbrace{\frac{5\cdot\text{TTC} + 2\cdot\text{C} + 5\cdot\text{EP} + 5\cdot\text{LK} + 5\cdot\text{EC}}{22}}_{\text{weighted average}},
+\label{eq:epdms}
+\end{equation}
+with DDC the driving-direction compliance, TL the traffic-light compliance, LK
+lane keeping, and EC extended comfort (consistency of acceleration, jerk, and
+yaw across consecutive frames). The NAVSIM~v2 variant additionally introduces a
+\emph{filtering} mechanism: if a rule violation was also committed by the human
+expert in the same scene, the corresponding penalty is waived, which avoids
+penalizing contextually justified maneuvers (for example briefly crossing into
+the opposite lane to pass a static obstacle) due to label noise. Table~\ref{tab:metrics}
+summarizes the sub-scores, their type, and their weights.
+
+\begin{table}[t]
+\centering
+\caption{Sub-scores of the PDM and Extended PDM scores. Penalty terms are
+multiplicative (a value of $0$ zeroes the whole score); quality terms are
+combined in a weighted average. PDMS uses the subset $\{$NC, DAC, TTC, C, EP$\}$;
+EPDMS adds DDC, TL, LK, and EC.}
+\label{tab:metrics}
+\begin{tblr}{
+  colspec={lllc},
+  row{1}={font=\bfseries},
+}
+\toprule
+Sub-score & Meaning & Type & Weight \\
+\midrule
+NC  & No at-fault collision        & penalty ($\times$)         & -- \\
+DAC & Drivable-area compliance     & penalty ($\times$)         & -- \\
+DDC & Driving-direction compliance & penalty ($\times$, EPDMS)  & -- \\
+TL  & Traffic-light compliance     & penalty ($\times$, EPDMS)  & -- \\
+\midrule
+TTC & Time-to-collision            & weighted avg.\             & 5 \\
+EP  & Ego progress                 & weighted avg.\             & 5 \\
+C   & Comfort                      & weighted avg.\             & 2 \\
+LK  & Lane keeping                 & weighted avg.\ (EPDMS)     & 5 \\
+EC  & Extended comfort             & weighted avg.\ (EPDMS)     & 5 \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+These metrics give the trajectory study its evaluation language. A trajectory
+sampled from the diffusion probe can be scored not only by displacement error
+against the human path --- a metric known to correlate poorly with real driving
+quality --- but by whether it stays on the drivable area, avoids collisions,
+makes progress, and respects driving direction and comfort. Combined with the
+distribution-level realism-and-coverage view inherited from Orbis, this lets us
+ask the questions that matter for a world-model probe: are the predicted
+trajectories not only \emph{close} to what a human did, but \emph{drivable},
+\emph{safe}, and appropriately \emph{diverse}.

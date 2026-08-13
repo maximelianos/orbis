@@ -224,6 +224,12 @@ class NavsimLongBase(Dataset):
         frames, _ = self._episode_frames(self.episodes[idx])
         return len(frames[:: self.frame_interval])
 
+    def episode_trajectory(self, idx):
+        """Cheap (image-free) subsampled local trajectory (T, 2) of episode `idx`."""
+        frames, _ = self._episode_frames(self.episodes[idx])
+        frames = frames[:: self.frame_interval]
+        return poses_to_local_traj(poses_from_frames(frames))
+
     def episode_token(self, idx):
         """Unique token of episode `idx` (matches the `token` stored in the cache).
 

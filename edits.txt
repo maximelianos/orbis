@@ -375,5 +375,38 @@ Plan
 * 2D driving simulator
   * Test if diffusion can capture all kinds of trajectories
 
-project trajectory onto image
-nureasoning
+Plan
+* project trajectory onto image
+* nureasoning
+
+#### 06.08.2026
+
+- nuReasoning
+  - disk incredibly slow, nuReasoning stores jpg as separate files, can't unpack
+    in reasonable time. Many small files - huge delay
+- scene filter: by minimum distance and turning angle
+
+- rollout: need to retrain the model in either way
+  - train on longer sequences
+  - autoregressive rollout
+  - run world model and condition on its latent
+  
+  - later: train the trajectory predictor 50% on given context trajectory and 50% on not given. + start misaligned from images
+
+
+Question: Which layer in WM is optimal, how manay diffusion steps?
+
+Prompt
+    Add another page with histograms. First histogram: distances, where the min distance is 100m.
+    Second histogram: steering angles, where min angle is 30 degrees.
+    On the episode pages, plot same as is test_model: on the top row, two front views and a BEV.
+
+Write a new script test_rollout. It's like test_model, but hardcode a parameter total_points = 40, which are predicted autoregressively:
+the model receives its last predicted 
+
+
+
+
+
+- cross road filtering
+- training on maximum length

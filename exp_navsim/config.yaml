@@ -84,7 +84,7 @@ model:
     # raw vs encoded image input:
     #   encode_images: false -> read cached latents (data below must be latent)
     #   encode_images: true  -> read raw images, model loads the tokenizer
-    encode_images: false
+    encode_images: true
     tokenizer_exp_dir: logs_tk/tokenizer_288x512
     tokenizer_ckpt: checkpoints/last.ckpt
     tokenizer_config: config.yaml
@@ -142,7 +142,7 @@ data:
 # (num_frames) and train/val split as the encoded path.
 # --------------------------------------------------------------------------- #
 
-# data_raw:
+# data:
 #   target: data.datamodule.DataModuleFromConfig
 #   params:
 #     batch_size: 8                    # smaller: raw images + on-GPU encoder use more memory

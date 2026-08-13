@@ -1,0 +1,32 @@
+\contentsline {section}{\numberline {1}Introduction}{2}{}%
+\contentsline {subsection}{\numberline {1.1}The Orbis world model}{2}{}%
+\contentsline {paragraph}{Stage 1: hybrid image tokenizer.}{2}{}%
+\contentsline {paragraph}{Stage 2: latent-space diffusion world model.}{3}{}%
+\contentsline {subsection}{\numberline {1.2}Probing the latent for future trajectories}{3}{}%
+\contentsline {section}{\numberline {2}Related Work}{4}{}%
+\contentsline {subsection}{\numberline {2.1}Diffusion and flow matching}{4}{}%
+\contentsline {paragraph}{Denoising diffusion probabilistic models.}{4}{}%
+\contentsline {paragraph}{Flow matching.}{5}{}%
+\contentsline {paragraph}{Continuous vs.\ discrete generation.}{6}{}%
+\contentsline {subsection}{\numberline {2.2}The diffusion transformer}{6}{}%
+\contentsline {subsection}{\numberline {2.3}World models}{6}{}%
+\contentsline {paragraph}{The world-model concept.}{6}{}%
+\contentsline {paragraph}{Popular video and driving world models.}{6}{}%
+\contentsline {paragraph}{Orbis.}{7}{}%
+\contentsline {paragraph}{Navigation world models.}{8}{}%
+\contentsline {section}{\numberline {3}Datasets and Benchmarks}{8}{}%
+\contentsline {subsection}{\numberline {3.1}nuPlan}{8}{}%
+\contentsline {subsection}{\numberline {3.2}The NAVSIM benchmark}{9}{}%
+\contentsline {subsection}{\numberline {3.3}PDM and Extended PDM scores}{10}{}%
+\contentsline {section}{\numberline {4}A Controlled Synthetic Study}{11}{}%
+\contentsline {subsection}{\numberline {4.1}Synthetic data generation}{11}{}%
+\contentsline {paragraph}{Velocity representation.}{11}{}%
+\contentsline {subsection}{\numberline {4.2}Velocity normalization}{12}{}%
+\contentsline {subsection}{\numberline {4.3}Denoiser architecture}{13}{}%
+\contentsline {subsection}{\numberline {4.4}Flow-matching training and sampling}{14}{}%
+\contentsline {paragraph}{Sampling.}{15}{}%
+\contentsline {subsection}{\numberline {4.5}Conditioning is disabled by design}{15}{}%
+\contentsline {subsection}{\numberline {4.6}Ablations}{15}{}%
+\contentsline {subsubsection}{\numberline {4.6.1}Model capacity}{15}{}%
+\contentsline {subsubsection}{\numberline {4.6.2}Velocity normalization}{17}{}%
+\contentsline {subsection}{\numberline {4.7}Summary}{17}{}%

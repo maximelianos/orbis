@@ -1,5 +1,6 @@
-#torchvision
-#h5py
+torchvision
+h5py
+
 timm
 diffusers>=0.33
 accelerate>=1.0
