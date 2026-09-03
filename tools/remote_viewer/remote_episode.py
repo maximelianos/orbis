@@ -286,7 +286,7 @@ def _window_batch(starts, total_len):
             # +x — so that, not the frame-0 heading, is the frame the model was
             # fitted in. Feeding a mid-episode window unrotated hands it context
             # velocities pointing the wrong way.
-            traj = _rotate_path(traj, -_heading_at(trajectory, start)).astype(np.float32)
+            #traj = _rotate_path(traj, -_heading_at(trajectory, start)).astype(np.float32)
             pad = total_len - len(traj)
             if pad > 0:
                 traj = np.concatenate([traj, np.repeat(traj[-1:], pad, axis=0)], axis=0)
