@@ -133,24 +133,31 @@ class KernelClient:
                 return json.loads(line)
         raise RemoteError(f"expected a JSON line, got:\n{text}")
 
-    def fetch_frames(self, start, stop, quality, max_width):
-        """Render frames [start, stop) remotely -> {index: JPEG bytes | error str}.
+    def fetch_frames(self, start, stop, quality, max_width, total_len, num_samples):
+        """Render frames [start, stop) remotely.
 
-        One execute_request per *batch*: the round trip (~tens of ms over SSH)
-        is then amortised over `stop - start` frames instead of paid per frame.
+        Returns ({index: JPEG bytes | error str}, note), where `note` is a
+        non-fatal remote complaint (e.g. the model failed but the BEV still drew).
+
+        One execute_request per *batch*: the SSH round trip (tens of ms) is
+        amortised over `stop - start` frames instead of paid per frame, and the
+        remote side gets to run the model for the whole span as one batch.
         """
         import base64
 
         msgs = self.execute(
-            f"viewer_frames({start}, {stop}, quality={quality}, max_width={max_width})")
-        frames = {}
+            f"viewer_frames({start}, {stop}, quality={quality}, max_width={max_width}, "
+            f"total_len={total_len}, num_samples={num_samples})")
+        frames, note = {}, ""
         for m in msgs:
             # display_data puts metadata inside `content`, alongside `data`.
             tag = (m["content"].get("metadata") or {}).get("viewer")
             if not tag:
                 continue
-            if "error" in tag:
+            if "note" in tag:               # went wrong, but cost no frame
+                note = tag["note"]
+            elif "error" in tag:
                 frames[tag["index"]] = tag["error"]
             else:
                 frames[tag["index"]] = base64.b64decode(m["content"]["data"]["image/jpeg"])
-        return frames
+        return frames, note
