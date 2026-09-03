@@ -403,7 +403,7 @@ def _render_bev_base(episode, size):
     origin = ax.transData.transform([[0.0, 0.0]])[0]
     unit = ax.transData.transform([[1.0, 1.0]])[0]
     affine = (float(origin[0]), float(unit[0] - origin[0]),
-              float(image.height - origin[1]), float(origin[1] - unit[1]))
+            float(image.height - origin[1]), float(origin[1] - unit[1]))
     return image, affine, gt
 
 
