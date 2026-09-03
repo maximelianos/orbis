@@ -285,7 +285,7 @@ def _window_batch(state, starts, total_len):
 
             traj = np.asarray(trajectory[start:start + total_len], dtype=np.float32)
             traj = traj - traj[0]
-            #traj = _rotate_path(traj, -_heading_at(trajectory, start)).astype(np.float32)
+            traj = _rotate_path(traj, -_heading_at(trajectory, start)).astype(np.float32)
             pad = total_len - len(traj)
             if pad > 0:
                 traj = np.concatenate([traj, np.repeat(traj[-1:], pad, axis=0)], axis=0)
@@ -335,7 +335,7 @@ def _predict(state, starts, total_len, num_samples):
         for j, start in enumerate(todo):
             # Undo the input rotation, then place the path at the ego position.
             heading = _heading_at(gt, start)
-            cache[(total_len, start)] = (preds[j] #(_rotate_path(preds[j], heading)
+            cache[(total_len, start)] = (_rotate_path(preds[j], heading)
                                          + gt[min(start, len(gt) - 1)])
     return {s: cache[(total_len, s)] for s in starts if (total_len, s) in cache}
 
@@ -403,7 +403,7 @@ def _render_bev_base(episode, size):
     origin = ax.transData.transform([[0.0, 0.0]])[0]
     unit = ax.transData.transform([[1.0, 1.0]])[0]
     affine = (float(origin[0]), float(unit[0] - origin[0]),
-            float(image.height - origin[1]), float(origin[1] - unit[1]))
+              float(image.height - origin[1]), float(origin[1] - unit[1]))
     return image, affine, gt
 
 
