@@ -112,7 +112,7 @@ SETTINGS = {
     # be predicted. data_long runs with split "all", so the default mixes the two
     # and (at val_fraction 0.1) nine of ten episodes are ones the model trained
     # on. Use "val" to judge the model on episodes it has never seen.
-    "split": "all",
+    "split": "val",
     "total_len": 20,                    # model window: context + predicted frames
     "samples": 0,                       # 0 = the model's num_val_samples
 
