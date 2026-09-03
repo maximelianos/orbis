@@ -29,20 +29,54 @@ _VIEWER = {}          # kernel-resident state; survives between calls
 # --------------------------------------------------------------------------- #
 # Dataset + per-episode statistics
 # --------------------------------------------------------------------------- #
+def _config(config_path):
+    """Loaded config, cached alongside the dataset it belongs to."""
+    from omegaconf import OmegaConf
+
+    if _VIEWER.get("cfg") is None:
+        _VIEWER["cfg"] = OmegaConf.load(config_path)
+    return _VIEWER["cfg"]
+
+
 def _dataset(config_path):
     """Build the long dataset, cached on the config path.
 
     Rebuilding navtrain's episode index costs tens of seconds, so it happens once
     per kernel, not once per seek.
     """
-    from omegaconf import OmegaConf
     from exp_navsim.data.navsim_base import NavsimLongBase
 
     if _VIEWER.get("config_path") != config_path:
-        _VIEWER["ds"] = NavsimLongBase.from_config(OmegaConf.load(config_path))
-        _VIEWER["config_path"] = config_path
-        _VIEWER.pop("stats", None)                  # stats belong to the old dataset
+        _VIEWER["config_path"], _VIEWER["cfg"] = config_path, None
+        _VIEWER["ds"] = NavsimLongBase.from_config(_config(config_path))
+        for stale in ("stats", "cache_index", "cache_traj"):
+            _VIEWER.pop(stale, None)                # all belong to the old dataset
     return _VIEWER["ds"]
+
+
+def _cache_index(config):
+    """One pass over the latent cache -> {token: h5 path}, plus its trajectories.
+
+    Both the episode scan and the model need this map, and walking ~10k files
+    twice would be pure waste. The file open dominates the cost, so reading each
+    episode's trajectory in the same pass adds only ~1.7 s over the whole cache
+    and saves the scan a second walk.
+    """
+    import h5py
+    from pathlib import Path
+
+    from exp_navsim.data.navsim_base import NavsimLongBase
+
+    if "cache_index" not in _VIEWER:
+        cache_dir = Path(NavsimLongBase.cache_dir(_config(config)))
+        index, trajectories = {}, {}
+        for path in sorted(cache_dir.glob("*.h5")):
+            with h5py.File(path, "r") as f:
+                token = f.attrs.get("token", path.stem)
+                index[token] = str(path)
+                trajectories[token] = f["trajectory"][:]
+        _VIEWER["cache_index"], _VIEWER["cache_traj"] = index, trajectories
+    return _VIEWER["cache_index"]
 
 
 def viewer_list(config="exp_navsim/config.yaml"):
@@ -54,18 +88,32 @@ def viewer_list(config="exp_navsim/config.yaml"):
 def _scan(config):
     """Cache length / distance / steering of every episode, for the GUI filters.
 
-    Image-free (episode_trajectory only parses the pose pickles) but still a full
-    pass over the dataset, so it is minutes on navtrain — hence cached, and only
-    triggered when the user actually applies a filter. Prints nothing: callers
-    that talk to the GUI must emit exactly one JSON line of their own.
+    Trajectories come from the latent cache rather than from
+    ds.episode_trajectory, which re-parses the navtrain log pickles and then
+    filters all their frames per episode: measured 0.4 ms vs 13 ms per episode,
+    i.e. ~4 s instead of ~2 min over the 9577 episodes. The cached trajectory is
+    identical — cache_latents.py writes exactly sample["trajectory"] — so the
+    statistics are unchanged. Episodes with no cached latents fall back to the
+    slow path.
+
+    Prints nothing: callers that talk to the GUI must emit exactly one JSON line
+    of their own.
     """
     import numpy as np
     from exp_navsim.visualize_dataset import trajectory_stats, MIN_DISPLACEMENT
 
     ds = _dataset(config)
     if "stats" not in _VIEWER:
-        rows = [(len(t),) + trajectory_stats(t)
-                for t in (ds.episode_trajectory(i) for i in range(len(ds)))]
+        _cache_index(config)
+        cached = _VIEWER["cache_traj"]
+        rows = []
+        for i in range(len(ds)):
+            # episode_token is O(1) for both long datasets (it reads the index
+            # record, not the log), so the lookup itself costs nothing.
+            traj = cached.get(ds.episode_token(i))
+            if traj is None:
+                traj = ds.episode_trajectory(i)
+            rows.append((len(traj),) + trajectory_stats(traj))
         lengths, distances, steerings, displacements = map(np.asarray, zip(*rows))
         _VIEWER["stats"] = {
             "lengths": lengths, "distances": distances, "steerings": steerings,
@@ -129,31 +177,26 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
 
     Only the encoded mode is supported; raw mode would need the tokenizer.
     """
-    import h5py
     import torch
-    from omegaconf import OmegaConf
 
-    from util import instantiate_from_config
+    from exp_navsim.data.navsim_base import in_split
     from exp_navsim.model import NavsimTrajectoryModel
 
     if _VIEWER.get("ckpt") != (ckpt, split):
-        cfg = OmegaConf.load(config)
+        _dataset(config)                     # binds cfg + cache to this config first
+        cfg = _config(config)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model = NavsimTrajectoryModel.load_from_checkpoint(ckpt, map_location=device)
         if model.encode_images:
             raise RuntimeError("viewer supports encoded mode only (model.encode_images is set)")
 
-        latent_cfg = OmegaConf.to_container(cfg.data.params.validation, resolve=True)
-        latent_cfg["params"]["split"] = split
-        latent_ds = instantiate_from_config(latent_cfg)
-        # token -> h5 path, so a long-dataset episode can find its cached latents.
-        token_to_file = {}
-        for path in latent_ds.files:
-            with h5py.File(path, "r") as f:
-                token_to_file[f.attrs.get("token", path.stem)] = path
+        # The cache index is shared with the episode scan, so whichever runs
+        # first pays for the walk and the other gets it free.
+        val_fraction = float(cfg.data.params.validation.params.get("val_fraction", 0.1))
+        token_to_file = {token: path for token, path in _cache_index(config).items()
+                         if split == "all" or in_split(token, split, val_fraction)}
         _VIEWER.update(ckpt=(ckpt, split), model=model.to(device).eval(), device=device,
-                       latent_key=latent_ds.latent_key, token_to_file=token_to_file,
-                       val_fraction=float(latent_cfg["params"].get("val_fraction", 0.1)))
+                       token_to_file=token_to_file, val_fraction=val_fraction)
 
     model = _VIEWER["model"]
     print(json.dumps({
