@@ -285,7 +285,7 @@ def _window_batch(state, starts, total_len):
 
             traj = np.asarray(trajectory[start:start + total_len], dtype=np.float32)
             traj = traj - traj[0]
-            traj = _rotate_path(traj, -_heading_at(trajectory, start)).astype(np.float32)
+            #traj = _rotate_path(traj, -_heading_at(trajectory, start)).astype(np.float32)
             pad = total_len - len(traj)
             if pad > 0:
                 traj = np.concatenate([traj, np.repeat(traj[-1:], pad, axis=0)], axis=0)
@@ -335,7 +335,7 @@ def _predict(state, starts, total_len, num_samples):
         for j, start in enumerate(todo):
             # Undo the input rotation, then place the path at the ego position.
             heading = _heading_at(gt, start)
-            cache[(total_len, start)] = (_rotate_path(preds[j], heading)
+            cache[(total_len, start)] = preds[j] #(_rotate_path(preds[j], heading)
                                          + gt[min(start, len(gt) - 1)])
     return {s: cache[(total_len, s)] for s in starts if (total_len, s) in cache}
 
