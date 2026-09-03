@@ -61,14 +61,19 @@ The worker thread buffers EVERY frame of the current episode and of the
 neighbour is buffered, and the kernel keeps those episodes' rasterised BEVs warm
 so re-opening one costs no render either.
 
-NOTE ON THE SPLIT
------------------
-The long dataloader runs with split "all" while data.params.validation is split
-"val", so by default only ~10% of browsable episodes would have cached latents to
-predict from. pred_split defaults to "all" so every cached episode can be
-predicted; the status line then shows whether the open episode is train or val,
-because a prediction on a train episode was fitted on that very trajectory. Set
-pred_split to "val" to restrict predictions to genuinely unseen episodes.
+TRAIN vs VALIDATION
+-------------------
+data_long runs with split "all", so by default the viewer walks train AND
+validation episodes; at val_fraction 0.1 that means nine out of ten episodes you
+page through are ones the model was fitted on, and their predictions flatter it.
+
+    python view_episode.py --token abc123 --ckpt <ckpt> --split val
+
+restricts both the browsable episodes and the predictions to the validation
+split — episodes the model has never seen. --split train does the opposite. The
+status line names the mode and tags each episode with its own side of the split.
+Membership is the same hash of the scene token that the training datasets use,
+so it agrees exactly with what the checkpoint was trained on.
 """
 
 import argparse
@@ -103,7 +108,11 @@ SETTINGS = {
 
     # --- model ---
     "ckpt": None,
-    "pred_split": "all",                # which cached episodes may be predicted
+    # "all" | "train" | "val". Selects which episodes are browsable AND which may
+    # be predicted. data_long runs with split "all", so the default mixes the two
+    # and (at val_fraction 0.1) nine of ten episodes are ones the model trained
+    # on. Use "val" to judge the model on episodes it has never seen.
+    "split": "all",
     "total_len": 20,                    # model window: context + predicted frames
     "samples": 0,                       # 0 = the model's num_val_samples
 
@@ -441,8 +450,10 @@ class Viewer:
                 return
             if kind == "filter":
                 matches = payload["episodes"]
-                self.message = (f"{len(matches)}/{payload['total']} episodes match"
-                                if matches else "no episode matches the filter")
+                self.message = (
+                    f"{len(matches)}/{payload['in_split']} {payload['split']} "
+                    f"episodes match (of {payload['total']})"
+                    if matches else f"no {payload['split']} episode matches the filter")
                 if matches:
                     self.episodes, self.pos = matches, 0
                     self._open(0)
@@ -521,7 +532,8 @@ class Viewer:
                   else "BEV" if (info or {}).get("bev") else "cameras only")
         if (info or {}).get("predicted"):
             panels += f" ({info.get('split', '?')})"
-        bits = [f"ep {self.episode} [{self.pos + 1}/{len(self.episodes)}]",
+        bits = [f"{self.settings['split']} ep {self.episode} "
+                f"[{self.pos + 1}/{len(self.episodes)}]",
                 f"frame {self.idx + 1}/{max(self.n, 1)}", state,
                 f"buf {here}/{max(total, 1)} eps {done}/{max(planned, 1)}",
                 panels, f"len {self.settings['total_len']}",
@@ -536,7 +548,7 @@ class Viewer:
 
 def filter_code(settings):
     return (f"viewer_filter({settings['min_distance']}, {settings['min_angle']}, "
-            f"{int(settings['min_frames'])})")
+            f"{int(settings['min_frames'])}, {settings['split']!r})")
 
 
 def connect(settings):
@@ -580,7 +592,7 @@ def main():
     if SETTINGS["ckpt"]:
         prefetcher.commands.put(("model", f"viewer_model({SETTINGS['ckpt']!r}, "
                                           f"{SETTINGS['config']!r}, "
-                                          f"{SETTINGS['pred_split']!r})"))
+                                          f"{SETTINGS['split']!r})"))
     prefetcher.commands.put(("filter", filter_code(SETTINGS)))
     Viewer(prefetcher, SETTINGS).run()
     kernel.close()

@@ -106,6 +106,17 @@ def _cache_index():
     return _VIEWER["cache_index"]
 
 
+def _val_fraction():
+    """Fraction of scene tokens assigned to validation.
+
+    Read from the validation data block, because that is the split the model was
+    actually trained against; in_split is a hash of the token, so the same
+    fraction gives the same membership in the long dataset and the latent cache.
+    """
+    cfg = _config(_OPTS["config"])
+    return float(cfg.data.params.validation.params.get("val_fraction", 0.1))
+
+
 def _scan():
     """Cache length / distance / steering of every episode, for the GUI filters.
 
@@ -118,6 +129,7 @@ def _scan():
     slow path.
     """
     import numpy as np
+    from exp_navsim.data.navsim_base import in_split
     from exp_navsim.visualize_dataset import trajectory_stats, MIN_DISPLACEMENT
 
     ds = _dataset()
@@ -133,8 +145,12 @@ def _scan():
                 traj = ds.episode_trajectory(i)
             rows.append((len(traj),) + trajectory_stats(traj))
         lengths, distances, steerings, displacements = map(np.asarray, zip(*rows))
+        val_fraction = _val_fraction()
         _VIEWER["stats"] = {
             "lengths": lengths, "distances": distances, "steerings": steerings,
+            # Cached with the rest: the split filter is then a mask, not a rescan.
+            "is_val": np.array([in_split(ds.episode_token(i), "val", val_fraction)
+                                for i in range(len(ds))]),
             # Below MIN_DISPLACEMENT the start->end vector is too short for its
             # angle to mean anything, so those episodes never pass an angle filter.
             "moved": displacements >= MIN_DISPLACEMENT,
@@ -142,12 +158,18 @@ def _scan():
     return _VIEWER["stats"]
 
 
-def viewer_filter(min_distance=0.0, min_angle=0.0, min_frames=0):
-    """Episode indices passing the three filters, same criteria as the PDF report.
+def viewer_filter(min_distance=0.0, min_angle=0.0, min_frames=0, split="all"):
+    """Episode indices passing the filters, restricted to `split`.
 
-    Mirrors visualize_dataset.py / test_model.py's EPISODE_FILTERS: distance
-    driven, |angle between the initial heading and start->end|, episode length.
-    All-zero filters simply return every episode.
+    The three thresholds mirror visualize_dataset.py / test_model.py's
+    EPISODE_FILTERS: distance driven, |angle between the initial heading and
+    start->end|, episode length. All-zero thresholds simply return every episode
+    of the split.
+
+    `split` matters more than it looks: data_long runs with split "all", so
+    without it the viewer walks train and validation episodes indiscriminately
+    and — at val_fraction 0.1 — nine out of ten episodes shown are ones the model
+    was fitted on.
     """
     import numpy as np
 
@@ -157,8 +179,15 @@ def viewer_filter(min_distance=0.0, min_angle=0.0, min_frames=0):
             & (s["lengths"] >= min_frames))
     if min_angle > 0:
         keep &= s["moved"]
+    if split == "val":
+        keep &= s["is_val"]
+    elif split == "train":
+        keep &= ~s["is_val"]
     print(json.dumps({"episodes": np.flatnonzero(keep).tolist(),
-                      "total": len(s["lengths"])}))
+                      "total": len(s["lengths"]), "split": split,
+                      "in_split": int(s["is_val"].sum() if split == "val"
+                                      else (~s["is_val"]).sum() if split == "train"
+                                      else len(s["is_val"]))}))
 
 
 # --------------------------------------------------------------------------- #
@@ -188,7 +217,6 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
 
     if _VIEWER.get("ckpt") != (ckpt, split):
         _dataset()                           # binds cfg + cache to this config first
-        cfg = _config(_OPTS["config"])
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model = NavsimTrajectoryModel.load_from_checkpoint(ckpt, map_location=device)
         if model.encode_images:
@@ -196,7 +224,7 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
 
         # The cache index is shared with the episode scan, so whichever runs
         # first pays for the walk and the other gets it free.
-        val_fraction = float(cfg.data.params.validation.params.get("val_fraction", 0.1))
+        val_fraction = _val_fraction()
         token_to_file = {token: path for token, path in _cache_index().items()
                          if split == "all" or in_split(token, split, val_fraction)}
         _VIEWER.update(ckpt=(ckpt, split), model=model.to(device).eval(), device=device,
