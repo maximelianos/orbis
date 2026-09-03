@@ -111,7 +111,10 @@ SETTINGS = {
     "cameras": "front",                 # "front" | "surround"
     "bev": True,
     "bev_size": 512,                    # BEV panel render size in px
-    "width": 768,                       # final frame width in px (0 = as composited)
+    # 0 = send the frame at its composited size and let the window scale it for
+    # display. Setting a width larger than that only costs bytes and encode time;
+    # raise bev_size for genuinely more detail (the camera is 256 px either way).
+    "width": 0,                         # final frame width in px
     "quality": 85,                      # JPEG quality
 
     # --- playback / buffering ---
@@ -123,6 +126,12 @@ SETTINGS = {
 
 # Options the kernel needs for rendering; sent once by connect().
 _REMOTE_OPTS = ("config", "cameras", "bev", "bev_size", "width", "quality")
+
+# How often the window is serviced (keys, redraw, status). Independent of fps:
+# the playhead has its own clock, so playback stays at the dataset's rate while
+# the UI stays responsive.
+UI_REFRESH_MS = 30
+STATUS_REFRESH_S = 0.2
 
 
 class Prefetcher(threading.Thread):
@@ -274,11 +283,24 @@ class Viewer:
         self.message = "scanning episodes (slow the first time)"
         self.photo = None                     # Tk drops images nothing references
         self.drawn = None                     # (episode, index, w, h) on screen
+        self.stage_size = (880, 900)          # tracked by <Configure>, not winfo
+        self.last_advance = 0.0               # when the playhead last moved
+        self.last_status = 0.0
 
         self.root = tk.Tk()
         self.root.title("navsim episode viewer")
         self.root.geometry("900x1000")
-        self.view = tk.Label(self.root, bg="black")
+        # The image goes inside a frame with propagation OFF. A Label takes its
+        # requested size from its image, so without this the window grows to fit
+        # each frame, which grows the area we scale into, which grows the next
+        # frame — the picture creeps larger every redraw.
+        # Explicit size: with propagation off the frame has no requested size of
+        # its own, so give it a sensible one for the first layout.
+        self.stage = tk.Frame(self.root, bg="black", width=880, height=900)
+        self.stage.pack(fill="both", expand=True)
+        self.stage.pack_propagate(False)
+        self.stage.bind("<Configure>", self._on_resize)
+        self.view = tk.Label(self.stage, bg="black", bd=0)
         self.view.pack(fill="both", expand=True)
         self._build_controls()
         self.status = tk.Label(self.root, anchor="w", font=("TkFixedFont", 9))
@@ -313,6 +335,11 @@ class Viewer:
         tk.Label(row, text="space=pause  arrows=step  n/p=episode  q=quit",
                  fg="gray40").pack(side="right", padx=8)
 
+    def _on_resize(self, event):
+        """Remember the area available to the picture and force one rescale."""
+        self.stage_size = (event.width, event.height)
+        self.drawn = None
+
     @property
     def episode(self):
         return self.episodes[self.pos] if self.episodes else None
@@ -335,6 +362,7 @@ class Viewer:
         if not self.playing and self.idx >= self.n - 1:
             self.idx = 0
         self.playing = not self.playing
+        self.last_advance = time.monotonic()
 
     def _step(self, delta):
         self.playing = False                  # stepping implies manual control
@@ -373,6 +401,7 @@ class Viewer:
             return
         self.pos = pos % len(self.episodes)
         self.idx, self.playing, self.drawn = 0, True, None
+        self.last_advance = time.monotonic()
         self.pre.set_plan(self._plan())
 
     def _apply(self):
@@ -427,8 +456,16 @@ class Viewer:
 
     # --- playback ------------------------------------------------------------ #
     def _tick(self):
-        """One playback step. Advances only when the next frame is already buffered,
-        so a slow patch of the stream stalls the video instead of skipping it."""
+        """Service the window: apply results, redraw, and advance if it is time.
+
+        This runs at UI_REFRESH_MS, NOT at the playback rate. Driving the loop at
+        1/fps meant a keypress waited up to 500 ms at 2 fps for the next tick,
+        which is what made stepping and n/p feel slow even with everything
+        already buffered. The playhead keeps its own clock below.
+
+        Advancing needs the next frame to be buffered, so a gap in the stream
+        stalls the video instead of skipping over it.
+        """
         self._drain_results()
         episode = self.episode
         info = self.pre.infos.get(episode) if episode is not None else None
@@ -437,19 +474,24 @@ class Viewer:
         frame = self.pre.get(episode, self.idx) if info else None
         if frame is not None:
             self._show(episode, frame)
-            if self.playing:
+            now = time.monotonic()
+            if self.playing and now - self.last_advance >= 1.0 / self.settings["fps"]:
+                self.last_advance = now
                 nxt = self.idx + 1
                 if nxt >= self.n:
                     self.idx, self.playing = ((0, True) if self.settings["loop"]
                                               else (self.n - 1, False))
                 else:
                     self.idx = nxt
-        self._update_status(info, buffering=frame is None)
-        self.root.after(int(1000 / self.settings["fps"]), self._tick)
+        now = time.monotonic()
+        if now - self.last_status >= STATUS_REFRESH_S:
+            self.last_status = now
+            self._update_status(info, buffering=frame is None)
+        self.root.after(UI_REFRESH_MS, self._tick)
 
     def _show(self, episode, frame):
         """Render a buffered frame, scaled to fit the window (never scaled up)."""
-        w, h = self.view.winfo_width(), self.view.winfo_height()
+        w, h = self.stage_size
         if self.drawn == (episode, self.idx, w, h):   # nothing changed -> skip
             return
         self.drawn = (episode, self.idx, w, h)
@@ -458,10 +500,12 @@ class Viewer:
             return
         img = Image.open(io.BytesIO(frame))
         if w > 1 and h > 1:
-            scale = min(w / img.width, h / img.height, 1.0)
-            if scale < 1.0:
-                img = img.resize((max(int(img.width * scale), 1),
-                                  max(int(img.height * scale), 1)), Image.BILINEAR)
+            # Fill the window in both directions. Enlarging here is free and keeps
+            # the wire payload at the rendered resolution — sending a bigger JPEG
+            # instead would cost bandwidth without adding any detail.
+            scale = min(w / img.width, h / img.height)
+            img = img.resize((max(int(img.width * scale), 1),
+                              max(int(img.height * scale), 1)), Image.BILINEAR)
         self.photo = ImageTk.PhotoImage(img)
         self.view.configure(image=self.photo, text="")
 

@@ -341,17 +341,18 @@ def _predict(state, starts, total_len, num_samples):
 
 
 def _max_start(state, total_len):
-    """Last frame whose model context is real rather than padding.
+    """Last frame that gets a prediction — every frame, once a model is loaded.
 
-    The window's leading context_traj poses and context_images latents are the
-    model's *input*; once they would run off the end of the episode there is
-    nothing genuine to condition on, so those final frames get no prediction.
+    For the final context_traj-1 frames part of the model's input context is the
+    padding _window_batch adds (a repeated pose, so zero velocity, and a short
+    latent stack the denoiser already tolerates via min(shape[1], context)).
+    Those forecasts are weaker rather than meaningless, and the heading they are
+    placed at still comes from real motion, so they are drawn: seeing the model's
+    last call is more useful than a blank panel at the end of every episode.
     """
-    model = _VIEWER.get("model")
-    if model is None or state.get("latent_file") is None:
+    if _VIEWER.get("model") is None or state.get("latent_file") is None:
         return -1
-    context = max(int(model.context_traj), int(model.context_images), 1)
-    return len(state["frames"]) - min(context, total_len)
+    return len(state["frames"]) - 1
 
 
 # --------------------------------------------------------------------------- #
@@ -582,7 +583,7 @@ def _encode(img, quality, width):
     from PIL import Image
 
     if width and width != img.width:
-        img = img.resize((width, round(img.height * width / img.width)), Image.LANCZOS)
+        img = img.resize((width, round(img.height * width / img.width)), Image.BILINEAR)
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=quality)
     return buf.getvalue()
