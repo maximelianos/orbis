@@ -208,6 +208,43 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
     }))
 
 
+def _heading_at(trajectory, i):
+    """Ego heading at frame `i`, taken from the previous velocity step.
+
+    Walks back to the most recent non-zero step, since the ego may be standing
+    still at `i`; if nothing precedes `i` it uses the first move instead. The
+    final fallback of 0 is the episode-frame-0 heading, which
+    poses_to_local_traj puts along +x by construction.
+    """
+    import numpy as np
+
+    traj = np.asarray(trajectory, dtype=np.float64)
+    order = list(range(min(i, len(traj) - 1), 0, -1)) + list(range(1, len(traj)))
+    for j in order:
+        step = traj[j] - traj[j - 1]
+        if np.linalg.norm(step) > 1e-6:
+            return float(np.arctan2(step[1], step[0]))
+    return 0.0
+
+
+def _rotate_path(path, heading):
+    """Rotate a path about its origin by `heading` radians. Shape (..., T, 2).
+
+    Written as the polar round trip the fix calls for: every step becomes a
+    (heading, distance) pair, `heading` is added to each, and the path is
+    re-integrated. That is a rigid rotation, so step lengths are untouched — only
+    the direction the whole path sets off in changes.
+    """
+    import numpy as np
+
+    path = np.asarray(path, dtype=np.float64)
+    steps = np.diff(path, axis=-2, prepend=np.zeros_like(path[..., :1, :]))
+    angle = np.arctan2(steps[..., 1], steps[..., 0]) + heading
+    distance = np.linalg.norm(steps, axis=-1)
+    return np.cumsum(np.stack([distance * np.cos(angle),
+                               distance * np.sin(angle)], axis=-1), axis=-2)
+
+
 def _window_batch(starts, total_len):
     """Build one padded batch holding the model window that starts at each frame.
 
@@ -243,6 +280,13 @@ def _window_batch(starts, total_len):
 
             traj = np.asarray(trajectory[start:start + total_len], dtype=np.float32)
             traj = traj - traj[0]
+            # Rotate into the ego frame at `start`. Training only ever saw windows
+            # beginning at episode frame 0 (num_frames=0 makes _window_start
+            # return 0), where poses_to_local_traj leaves the ego heading along
+            # +x — so that, not the frame-0 heading, is the frame the model was
+            # fitted in. Feeding a mid-episode window unrotated hands it context
+            # velocities pointing the wrong way.
+            traj = _rotate_path(traj, -_heading_at(trajectory, start)).astype(np.float32)
             pad = total_len - len(traj)
             if pad > 0:
                 traj = np.concatenate([traj, np.repeat(traj[-1:], pad, axis=0)], axis=0)
@@ -268,11 +312,11 @@ def _predict(starts, total_len, num_samples):
     costs `num_samples` forward passes rather than num_samples * len(starts).
     Results are memoised per (total_len, start) so scrubbing backwards is free.
 
-    The model returns window-local paths starting at the origin. The cached
-    trajectory is local to episode frame 0 in both origin *and* heading, and the
-    windowing only translates it, so putting a prediction back into episode
-    coordinates is a pure translation by the ego position at `start` — no
-    rotation (see exp_navsim/data/bev_extract.py on why the heading matters).
+    The model returns window-local paths starting at the origin, in the ego frame
+    of the window start (see _window_batch). Placing one back into episode
+    coordinates therefore takes a rotation by the ego heading at `start` followed
+    by a translation to the ego position there — the cached trajectory is aligned
+    to episode frame 0, so the two frames differ by exactly that heading.
     """
     import torch
 
@@ -290,7 +334,10 @@ def _predict(starts, total_len, num_samples):
         preds = preds.float().cpu().numpy()
         gt = _VIEWER["bev_gt"]
         for j, start in enumerate(todo):
-            cache[(total_len, start)] = preds[j] + gt[min(start, len(gt) - 1)]
+            # Undo the input rotation, then place the path at the ego position.
+            heading = _heading_at(gt, start)
+            cache[(total_len, start)] = (_rotate_path(preds[j], heading)
+                                         + gt[min(start, len(gt) - 1)])
     return {s: cache[(total_len, s)] for s in starts if (total_len, s) in cache}
 
 
