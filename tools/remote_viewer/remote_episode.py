@@ -3,31 +3,56 @@
 view_episode.py (on the local PC) reads this file's source and pushes it into the
 kernel, then calls the entry points below over the Jupyter websocket:
 
-    viewer_list(config)                                 -> one JSON line
-    viewer_scan(config)                                 -> one JSON line (slow, once)
+    viewer_config(**options)                            -> one JSON line
     viewer_filter(min_distance, min_angle, min_frames)  -> one JSON line
-    viewer_model(ckpt, config)                          -> one JSON line
-    viewer_open(config, episode, ...)                   -> one JSON line
-    viewer_frames(start, stop, ...)                     -> JPEG display_data messages
+    viewer_model(ckpt, config, split)                   -> one JSON line
+    viewer_prepare(episode)                             -> one JSON line
+    viewer_frames(episode, start, stop, ...)            -> JPEG display_data
 
 Nothing here is imported on the local PC; it only has to be importable on the
 cluster (orbis repo root on sys.path, navsim env active).
 
-Everything expensive — the dataset index, the per-episode statistics, the loaded
-checkpoint, the rasterised BEV, the per-frame predictions — is cached in the
-module-level _VIEWER dict, which lives in the kernel between calls. That is the
-whole point of driving a kernel instead of spawning a process per request.
+Two levels of caching, both living in the kernel between calls — which is the
+whole point of driving a kernel instead of spawning a process per request:
+
+  _VIEWER    dataset index, episode statistics, checkpoint, latent-cache index
+  _EPISODES  per-episode render state (frames, rasterised BEV, predictions),
+             LRU-bounded so the viewer can keep neighbouring episodes warm and
+             switch between them without paying the BEV render again.
 """
 
 import base64
 import io
 import json
+from collections import OrderedDict
 
-_VIEWER = {}          # kernel-resident state; survives between calls
+_VIEWER = {}          # dataset-wide state
+_EPISODES = OrderedDict()   # episode -> render state (LRU)
+
+# Rendering options, set once from the client's SETTINGS dict via viewer_config.
+_OPTS = {
+    "config": "exp_navsim/config.yaml",
+    "cameras": "front",       # "front" | "surround"
+    "bev": True,
+    "bev_size": 512,
+    "quality": 80,
+    "width": 0,               # final frame width in px (0 = leave as composited)
+}
+
+# Episodes kept warm. The viewer buffers the current episode plus 3 either side,
+# so 8 leaves one slot of slack before the least-recently-used one is dropped.
+MAX_EPISODES = 8
+
+
+def viewer_config(**options):
+    """Set the rendering options and drop every cached panel drawn with the old ones."""
+    _OPTS.update(options)
+    _EPISODES.clear()
+    print(json.dumps(_OPTS))
 
 
 # --------------------------------------------------------------------------- #
-# Dataset + per-episode statistics
+# Dataset, latent cache, per-episode statistics
 # --------------------------------------------------------------------------- #
 def _config(config_path):
     """Loaded config, cached alongside the dataset it belongs to."""
@@ -38,7 +63,7 @@ def _config(config_path):
     return _VIEWER["cfg"]
 
 
-def _dataset(config_path):
+def _dataset():
     """Build the long dataset, cached on the config path.
 
     Rebuilding navtrain's episode index costs tens of seconds, so it happens once
@@ -46,15 +71,17 @@ def _dataset(config_path):
     """
     from exp_navsim.data.navsim_base import NavsimLongBase
 
+    config_path = _OPTS["config"]
     if _VIEWER.get("config_path") != config_path:
         _VIEWER["config_path"], _VIEWER["cfg"] = config_path, None
         _VIEWER["ds"] = NavsimLongBase.from_config(_config(config_path))
         for stale in ("stats", "cache_index", "cache_traj"):
             _VIEWER.pop(stale, None)                # all belong to the old dataset
+        _EPISODES.clear()
     return _VIEWER["ds"]
 
 
-def _cache_index(config):
+def _cache_index():
     """One pass over the latent cache -> {token: h5 path}, plus its trajectories.
 
     Both the episode scan and the model need this map, and walking ~10k files
@@ -68,7 +95,7 @@ def _cache_index(config):
     from exp_navsim.data.navsim_base import NavsimLongBase
 
     if "cache_index" not in _VIEWER:
-        cache_dir = Path(NavsimLongBase.cache_dir(_config(config)))
+        cache_dir = Path(NavsimLongBase.cache_dir(_config(_OPTS["config"])))
         index, trajectories = {}, {}
         for path in sorted(cache_dir.glob("*.h5")):
             with h5py.File(path, "r") as f:
@@ -79,13 +106,7 @@ def _cache_index(config):
     return _VIEWER["cache_index"]
 
 
-def viewer_list(config="exp_navsim/config.yaml"):
-    """Episode count — the viewer browses range(num_episodes) until a filter runs."""
-    ds = _dataset(config)
-    print(json.dumps({"num_episodes": len(ds)}))
-
-
-def _scan(config):
+def _scan():
     """Cache length / distance / steering of every episode, for the GUI filters.
 
     Trajectories come from the latent cache rather than from
@@ -95,16 +116,13 @@ def _scan(config):
     identical — cache_latents.py writes exactly sample["trajectory"] — so the
     statistics are unchanged. Episodes with no cached latents fall back to the
     slow path.
-
-    Prints nothing: callers that talk to the GUI must emit exactly one JSON line
-    of their own.
     """
     import numpy as np
     from exp_navsim.visualize_dataset import trajectory_stats, MIN_DISPLACEMENT
 
-    ds = _dataset(config)
+    ds = _dataset()
     if "stats" not in _VIEWER:
-        _cache_index(config)
+        _cache_index()
         cached = _VIEWER["cache_traj"]
         rows = []
         for i in range(len(ds)):
@@ -124,21 +142,7 @@ def _scan(config):
     return _VIEWER["stats"]
 
 
-def viewer_scan(config="exp_navsim/config.yaml"):
-    """Run (or reuse) the scan and report the ranges the filter fields accept."""
-    import numpy as np
-
-    s = _scan(config)
-    print(json.dumps({
-        "num_episodes": len(s["lengths"]),
-        "max_frames": int(s["lengths"].max()),
-        "max_distance": float(s["distances"].max()),
-        "max_angle": float(np.abs(s["steerings"]).max()),
-    }))
-
-
-def viewer_filter(min_distance=0.0, min_angle=0.0, min_frames=0,
-                  config="exp_navsim/config.yaml"):
+def viewer_filter(min_distance=0.0, min_angle=0.0, min_frames=0):
     """Episode indices passing the three filters, same criteria as the PDF report.
 
     Mirrors visualize_dataset.py / test_model.py's EPISODE_FILTERS: distance
@@ -147,7 +151,7 @@ def viewer_filter(min_distance=0.0, min_angle=0.0, min_frames=0,
     """
     import numpy as np
 
-    s = _scan(config)
+    s = _scan()
     keep = ((s["distances"] >= min_distance)
             & (np.abs(s["steerings"]) >= min_angle)
             & (s["lengths"] >= min_frames))
@@ -172,8 +176,8 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
     (~every episode) while data.params.validation is split "val" at
     val_fraction 0.1, so nine out of ten browsable episodes would silently have
     no latents and therefore no prediction. cache_latents.py caches every
-    episode, so "all" is available; viewer_open reports which side of the split
-    each episode falls on, since a train episode was seen during training.
+    episode, so "all" is available; viewer_prepare reports which side of the
+    split each episode falls on, since a train episode was seen during training.
 
     Only the encoded mode is supported; raw mode would need the tokenizer.
     """
@@ -183,8 +187,8 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
     from exp_navsim.model import NavsimTrajectoryModel
 
     if _VIEWER.get("ckpt") != (ckpt, split):
-        _dataset(config)                     # binds cfg + cache to this config first
-        cfg = _config(config)
+        _dataset()                           # binds cfg + cache to this config first
+        cfg = _config(_OPTS["config"])
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model = NavsimTrajectoryModel.load_from_checkpoint(ckpt, map_location=device)
         if model.encode_images:
@@ -193,10 +197,11 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
         # The cache index is shared with the episode scan, so whichever runs
         # first pays for the walk and the other gets it free.
         val_fraction = float(cfg.data.params.validation.params.get("val_fraction", 0.1))
-        token_to_file = {token: path for token, path in _cache_index(config).items()
+        token_to_file = {token: path for token, path in _cache_index().items()
                          if split == "all" or in_split(token, split, val_fraction)}
         _VIEWER.update(ckpt=(ckpt, split), model=model.to(device).eval(), device=device,
                        token_to_file=token_to_file, val_fraction=val_fraction)
+        _EPISODES.clear()                    # states were built without predictions
 
     model = _VIEWER["model"]
     print(json.dumps({
@@ -245,13 +250,14 @@ def _rotate_path(path, heading):
                                distance * np.sin(angle)], axis=-1), axis=-2)
 
 
-def _window_batch(starts, total_len):
+def _window_batch(state, starts, total_len):
     """Build one padded batch holding the model window that starts at each frame.
 
     Each window is [start, start + total_len) of the cached episode, re-origined
-    at its own first frame — the same construction as
-    latent_dataset._window_traj, just at an explicit start instead of the
-    dataset's own choice.
+    at its own first frame and rotated into the ego frame there — the frame the
+    model was fitted in, since num_frames=0 makes _window_start return 0 and so
+    every training window began at episode frame 0, where poses_to_local_traj
+    leaves the ego heading along +x.
 
     Windows running off the end of the episode are padded by repeating the last
     pose (zero velocity). That padding is never read: the denoiser fills only
@@ -269,24 +275,17 @@ def _window_batch(starts, total_len):
     model = _VIEWER["model"]
     context_images = int(model.context_images)
     samples = []
-    with h5py.File(_VIEWER["latent_file"], "r") as f:
+    with h5py.File(state["latent_file"], "r") as f:
         trajectory = f["trajectory"][:]
         frame_rate = int(f.attrs.get("frame_rate", 2))
         for start in starts:
             # Only encoded_q_sem is read: get_encoded_q uses nothing else, and this
             # runs once per displayed frame, so the skipped q_rec read matters.
-            n_img = min(context_images, total_len)
-            q_sem = f["encoded_q_sem"][start:start + n_img]
+            q_sem = f["encoded_q_sem"][start:start + min(context_images, total_len)]
 
             traj = np.asarray(trajectory[start:start + total_len], dtype=np.float32)
             traj = traj - traj[0]
-            # Rotate into the ego frame at `start`. Training only ever saw windows
-            # beginning at episode frame 0 (num_frames=0 makes _window_start
-            # return 0), where poses_to_local_traj leaves the ego heading along
-            # +x — so that, not the frame-0 heading, is the frame the model was
-            # fitted in. Feeding a mid-episode window unrotated hands it context
-            # velocities pointing the wrong way.
-            #traj = _rotate_path(traj, -_heading_at(trajectory, start)).astype(np.float32)
+            traj = _rotate_path(traj, -_heading_at(trajectory, start)).astype(np.float32)
             pad = total_len - len(traj)
             if pad > 0:
                 traj = np.concatenate([traj, np.repeat(traj[-1:], pad, axis=0)], axis=0)
@@ -305,7 +304,7 @@ def _window_batch(starts, total_len):
             for k, v in batch.items()}
 
 
-def _predict(starts, total_len, num_samples):
+def _predict(state, starts, total_len, num_samples):
     """{start: (N, total_len, 2)} sampled trajectories, in episode frame-0 coords.
 
     All requested starts go through the model as ONE batch, so a batch of frames
@@ -320,19 +319,19 @@ def _predict(starts, total_len, num_samples):
     """
     import torch
 
-    if "model" not in _VIEWER or _VIEWER.get("latent_file") is None:
+    if "model" not in _VIEWER or state.get("latent_file") is None:
         return {}
 
-    cache = _VIEWER.setdefault("preds", {})
+    cache = state["preds"]
     todo = [s for s in starts if (total_len, s) not in cache]
     if todo:
         model = _VIEWER["model"]
         n = num_samples or int(model.num_val_samples)
-        batch = _window_batch(todo, total_len)
+        batch = _window_batch(state, todo, total_len)
         with torch.no_grad():
             preds = torch.stack([model.sample(batch) for _ in range(n)], 1)  # (B, N, T, 2)
         preds = preds.float().cpu().numpy()
-        gt = _VIEWER["bev_gt"]
+        gt = state["bev_gt"]
         for j, start in enumerate(todo):
             # Undo the input rotation, then place the path at the ego position.
             heading = _heading_at(gt, start)
@@ -341,7 +340,7 @@ def _predict(starts, total_len, num_samples):
     return {s: cache[(total_len, s)] for s in starts if (total_len, s) in cache}
 
 
-def _max_start(total_len):
+def _max_start(state, total_len):
     """Last frame whose model context is real rather than padding.
 
     The window's leading context_traj poses and context_images latents are the
@@ -349,10 +348,10 @@ def _max_start(total_len):
     nothing genuine to condition on, so those final frames get no prediction.
     """
     model = _VIEWER.get("model")
-    if model is None:
+    if model is None or state.get("latent_file") is None:
         return -1
     context = max(int(model.context_traj), int(model.context_images), 1)
-    return len(_VIEWER["frames"]) - min(context, total_len)
+    return len(state["frames"]) - min(context, total_len)
 
 
 # --------------------------------------------------------------------------- #
@@ -392,8 +391,7 @@ def _render_bev_base(episode, size):
     fig = Figure(figsize=(size / dpi, size / dpi), dpi=dpi)
     canvas = FigureCanvasAgg(fig)
     ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])          # full-bleed: no wasted margin
-    # No predictions here — they are per-frame. Extra margin leaves room for the
-    # sampled paths, which can leave the GT's bounding box.
+    # No predictions here — they are per-frame, drawn as overlays.
     draw_bev_distribution(ax, bev, gt, None, title=None)
     canvas.draw()
 
@@ -417,12 +415,12 @@ def _to_pixels(points, affine):
     return [(px0 + sx * p[1], py0 + sy * p[0]) for p in pts]
 
 
-def _bev_overlay(i, total_len, num_samples):
+def _bev_overlay(state, i, total_len, num_samples):
     """The BEV bitmap with this frame's GT window, predictions and ego marker."""
     from PIL import ImageDraw
 
-    panel = _VIEWER["bev_img"].copy()
-    affine, gt = _VIEWER["bev_affine"], _VIEWER["bev_gt"]
+    panel = state["bev_img"].copy()
+    affine, gt = state["bev_affine"], state["bev_gt"]
     draw = ImageDraw.Draw(panel, "RGBA")
 
     # Predicted distribution for this frame, translucent so overlap reads as density.
@@ -430,9 +428,9 @@ def _bev_overlay(i, total_len, num_samples):
     # recorded — swallowing it silently looks exactly like "the model predicted
     # nothing", which is the one thing this panel exists to show.
     preds = None
-    if i <= _max_start(total_len):
+    if i <= _max_start(state, total_len):
         try:
-            preds = _predict([i], total_len, num_samples).get(i)
+            preds = _predict(state, [i], total_len, num_samples).get(i)
         except Exception as e:
             _VIEWER["pred_error"] = f"prediction failed: {type(e).__name__}: {e}"
     if preds is not None:
@@ -459,59 +457,88 @@ def _bev_overlay(i, total_len, num_samples):
 
 
 # --------------------------------------------------------------------------- #
-# Opening an episode / streaming frames
+# Per-episode state
 # --------------------------------------------------------------------------- #
-def viewer_open(config="exp_navsim/config.yaml", episode=0, cameras="surround",
-                bev=True, bev_size=512):
-    """Select one episode, rasterise its BEV, and report the frame geometry.
+def _state(episode):
+    """Per-episode render state, LRU-cached so neighbouring episodes stay warm.
 
-    The camera frames themselves are NOT decoded here — _episode_frames only
-    parses the pose pickle — so opening stays fast even for long episodes.
+    Holds the parsed frame list, the rasterised BEV with its data->pixel affine,
+    the GT path, the episode's latent file and its prediction memo. Building it
+    is the expensive part of showing an episode (the BEV render is ~a second), so
+    keeping MAX_EPISODES of them is what lets the viewer buffer the episodes
+    either side and make n/p instant.
     """
     from exp_navsim.data.navsim_base import SURROUND_CAMERAS, in_split
 
-    ds = _dataset(config)
+    if episode in _EPISODES:
+        _EPISODES.move_to_end(episode)
+        return _EPISODES[episode]
+
+    ds = _dataset()
     frames, meta = ds._episode_frames(ds.episodes[episode])
-    frames = frames[::ds.frame_interval]             # same subsampling as load_sample
-    names = list(SURROUND_CAMERAS) if cameras == "surround" else [ds.front_camera]
-    _VIEWER.update(frames=frames, cams=names, episode=episode, preds={},
-                   bev_img=None, bev_affine=None, bev_gt=None,
-                   # Only validation episodes have cached latents to predict from.
-                   latent_file=_VIEWER.get("token_to_file", {}).get(meta["token"]))
-
-    note = ""
-    if bev:
-        try:
-            (_VIEWER["bev_img"], _VIEWER["bev_affine"],
-             _VIEWER["bev_gt"]) = _render_bev_base(episode, bev_size)
-            if _VIEWER["bev_img"] is None:
-                note = "no nuPlan map for this episode"
-        except Exception as e:                       # missing maps / navsim
-            note = f"BEV unavailable: {type(e).__name__}: {e}"
-    if "model" not in _VIEWER:
-        note = note or "no --ckpt given — BEV shows ground truth only"
-    elif _VIEWER["latent_file"] is None:
-        note = note or "no cached latents for this episode — no prediction"
-
-    h, w = ds.size                                   # per-camera crop; cameras side by side
-    strip_w, strip_h = w * len(names), h
-    panel = _VIEWER["bev_img"]
-    print(json.dumps({
-        "episode": episode, "token": meta["token"], "num_frames": len(frames),
-        "num_episodes": len(ds), "cameras": names, "frame_rate": ds.frame_rate,
-        "width": max(strip_w, panel.width if panel is not None else 0),
-        "height": strip_h + (panel.height if panel is not None else 0),
-        "bev": panel is not None,
-        "predicted": panel is not None and _VIEWER["latent_file"] is not None,
-        # Which side of the train/val split this episode falls on: predictions on
-        # a train episode were fitted on that very trajectory.
+    frames = frames[::ds.frame_interval]              # same subsampling as load_sample
+    cams = (list(SURROUND_CAMERAS) if _OPTS["cameras"] == "surround"
+            else [ds.front_camera])
+    state = {
+        "episode": episode, "token": meta["token"], "frames": frames, "cams": cams,
+        "bev_img": None, "bev_affine": None, "bev_gt": None, "preds": {},
+        # Only episodes with cached latents can be predicted.
+        "latent_file": _VIEWER.get("token_to_file", {}).get(meta["token"]),
         "split": ("val" if in_split(meta["token"], "val", _VIEWER.get("val_fraction", 0.1))
                   else "train"),
-        "note": note,
+        "note": "",
+    }
+
+    if _OPTS["bev"]:
+        try:
+            (state["bev_img"], state["bev_affine"],
+             state["bev_gt"]) = _render_bev_base(episode, _OPTS["bev_size"])
+            if state["bev_img"] is None:
+                state["note"] = "no nuPlan map for this episode"
+        except Exception as e:                        # missing maps / navsim
+            state["note"] = f"BEV unavailable: {type(e).__name__}: {e}"
+    if "model" not in _VIEWER:
+        state["note"] = state["note"] or "no --ckpt given — BEV shows ground truth only"
+    elif state["latent_file"] is None:
+        state["note"] = state["note"] or "no cached latents for this episode — no prediction"
+
+    _EPISODES[episode] = state
+    while len(_EPISODES) > MAX_EPISODES:
+        _EPISODES.popitem(last=False)                 # drop the least recently used
+    return state
+
+
+def viewer_prepare(episode):
+    """Build (or reuse) an episode's state and report its frame geometry.
+
+    The viewer calls this for the episodes it wants buffered, not just the one on
+    screen, so switching to a neighbour needs no round trip at all.
+    """
+    ds = _dataset()
+    state = _state(episode)
+    h, w = ds.size                                    # per-camera crop, cameras side by side
+    strip_w, strip_h = w * len(state["cams"]), h
+    panel = state["bev_img"]
+    width = max(strip_w, panel.width if panel is not None else 0)
+    height = strip_h + (panel.height if panel is not None else 0)
+    if _OPTS["width"]:                                # the frame is rescaled on encode
+        height, width = round(height * _OPTS["width"] / width), _OPTS["width"]
+    print(json.dumps({
+        "episode": episode, "token": state["token"], "num_frames": len(state["frames"]),
+        "num_episodes": len(ds), "cameras": state["cams"], "frame_rate": ds.frame_rate,
+        "width": width, "height": height,
+        "bev": panel is not None,
+        "predicted": panel is not None and state["latent_file"] is not None,
+        # Which side of the train/val split: predictions on a train episode were
+        # fitted on that very trajectory.
+        "split": state["split"], "note": state["note"],
     }))
 
 
-def _camera_strip(i):
+# --------------------------------------------------------------------------- #
+# Frame rendering
+# --------------------------------------------------------------------------- #
+def _camera_strip(state, i):
     """Frame `i` as a PIL image: the selected cameras concatenated left to right.
 
     Reuses NavsimLongBase._read_camera, so the resize / center-crop / scaling match
@@ -522,21 +549,21 @@ def _camera_strip(i):
     import torch
     from PIL import Image
 
-    ds, frame = _VIEWER["ds"], _VIEWER["frames"][i]
+    ds, frame = _VIEWER["ds"], state["frames"][i]
     strip = torch.cat([ds._read_camera(frame, c, required=False)
-                       for c in _VIEWER["cams"]], dim=2)          # concat along width
-    strip = ((strip.clamp(-1, 1) + 1) * 127.5).round().byte()     # [-1,1] -> uint8
-    return Image.fromarray(strip.permute(1, 2, 0).numpy())        # CHW -> HWC
+                       for c in state["cams"]], dim=2)             # concat along width
+    strip = ((strip.clamp(-1, 1) + 1) * 127.5).round().byte()      # [-1,1] -> uint8
+    return Image.fromarray(strip.permute(1, 2, 0).numpy())         # CHW -> HWC
 
 
-def _render(i, total_len, num_samples):
+def _render(state, i, total_len, num_samples):
     """Composite frame `i`: the camera strip above the BEV panel."""
     from PIL import Image
 
-    strip = _camera_strip(i)
-    if _VIEWER.get("bev_img") is None:
+    strip = _camera_strip(state, i)
+    if state["bev_img"] is None:
         return strip
-    panel = _bev_overlay(i, total_len, num_samples)
+    panel = _bev_overlay(state, i, total_len, num_samples)
 
     width = max(strip.width, panel.width)
     out = Image.new("RGB", (width, strip.height + panel.height), (0, 0, 0))
@@ -545,17 +572,24 @@ def _render(i, total_len, num_samples):
     return out
 
 
-def _encode(img, quality, max_width):
-    """JPEG-encode, downscaling first if the frame is wider than the viewer needs."""
-    if max_width and img.width > max_width:
-        img = img.resize((max_width, round(img.height * max_width / img.width)))
+def _encode(img, quality, width):
+    """JPEG-encode, resizing to `width` first (0 = leave as composited).
+
+    The width applies to the finished composite, so it scales in both directions.
+    Asking for more than the composite's natural size only buys bytes, not
+    detail — raise bev_size (and so the panel's own resolution) instead.
+    """
+    from PIL import Image
+
+    if width and width != img.width:
+        img = img.resize((width, round(img.height * width / img.width)), Image.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=quality)
     return buf.getvalue()
 
 
-def viewer_frames(start, stop, quality=80, max_width=0, total_len=20, num_samples=0):
-    """Emit frames [start, stop) as display_data, one message per frame.
+def viewer_frames(episode, start, stop, total_len=20, num_samples=0):
+    """Emit frames [start, stop) of `episode` as display_data, one per frame.
 
     The whole span's predictions are computed up front as a single batch — that is
     where per-frame inference becomes affordable — and then each frame is drawn
@@ -569,24 +603,27 @@ def viewer_frames(start, stop, quality=80, max_width=0, total_len=20, num_sample
     """
     from IPython.display import display
 
-    start, stop = max(start, 0), min(stop, len(_VIEWER["frames"]))
-    if _VIEWER.get("bev_img") is not None:
-        limit = _max_start(total_len)
+    state = _state(episode)
+    start, stop = max(start, 0), min(stop, len(state["frames"]))
+    if state["bev_img"] is not None:
+        limit = _max_start(state, total_len)
         batched = [i for i in range(start, stop) if i <= limit]
         if batched:
             try:
-                _predict(batched, total_len, num_samples)
+                _predict(state, batched, total_len, num_samples)
             except Exception as e:
                 _VIEWER["pred_error"] = f"prediction failed: {type(e).__name__}: {e}"
 
     for i in range(start, stop):
         try:
-            jpeg = _encode(_render(i, total_len, num_samples), quality, max_width)
+            jpeg = _encode(_render(state, i, total_len, num_samples),
+                           _OPTS["quality"], _OPTS["width"])
             display({"image/jpeg": base64.b64encode(jpeg).decode()},
-                    raw=True, metadata={"viewer": {"index": i}})
+                    raw=True, metadata={"viewer": {"episode": episode, "index": i}})
         except Exception as e:
             display({"text/plain": repr(e)}, raw=True,
-                    metadata={"viewer": {"index": i, "error": f"{type(e).__name__}: {e}"}})
+                    metadata={"viewer": {"episode": episode, "index": i,
+                                         "error": f"{type(e).__name__}: {e}"}})
 
     # Anything that went wrong without costing us a frame travels back on its own
     # message, so the viewer can show it in the status line.

@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Watch a NAVSIM long episode as video, streamed from a remote Jupyter kernel.
+"""Watch NAVSIM long episodes as video, streamed from a remote Jupyter kernel.
 
 Runs on your LOCAL PC. No notebook involved: it drives a kernel on the cluster
 through the Jupyter server's websocket API and shows the frames in a Tk window.
 
-Each frame is the surround-camera strip above the NAVSIM map BEV (lanes +
-agents). On the BEV: the whole ground-truth path, the window the model is being
-asked about, and — with --ckpt — the trajectory distribution the model predicts
-FROM THAT FRAME. The prediction is re-run at every frame, so playing the episode
-shows the forecast evolving. Near the end of the episode the window runs past the
-last recorded pose: the model still predicts a future there, it simply has no
-ground truth to be compared against.
+Each frame is the front camera above the NAVSIM map BEV (lanes + agents). On the
+BEV: the whole ground-truth path, the window the model is being asked about, and
+— with --ckpt — the trajectory distribution the model predicts FROM THAT FRAME,
+rotated into the ego heading there. The prediction is re-run at every frame, so
+playing the episode shows the forecast evolving. Near the end of the episode the
+window runs past the last recorded pose: the model still predicts a future there,
+it simply has no ground truth to be compared against.
+
+Every knob lives in the SETTINGS dict below; the command line just overrides it.
 
 SETUP
 -----
@@ -38,10 +40,6 @@ RUN
        python view_episode.py --token abc123 \\
            --ckpt logs_navsim/2026-08-21T14-45-31_config/checkpoints/last.ckpt
 
-       # start on the long, sharply-turning episodes
-       python view_episode.py --token abc123 --min-distance 100 --min-angle 30
-
-   Every episode of the dataloader is browsable from the start; n/p walk them.
    The token can also come from the JUPYTER_TOKEN environment variable.
 
 KEYS
@@ -55,29 +53,22 @@ KEYS
    Keys are ignored while you are typing in one of the number fields; press
    enter there (or click "apply") to commit.
 
-FIELDS
-------
-   model len    total frames in the model's window (context + predicted steps),
-                i.e. how far ahead it forecasts from the current frame.
+BUFFERING
+---------
+The worker thread buffers EVERY frame of the current episode and of the
+`neighbours` episodes either side, in priority order (current, +1, -1, +2, -2,
+...). Nothing the GUI does waits on the network: n/p switch instantly once a
+neighbour is buffered, and the kernel keeps those episodes' rasterised BEVs warm
+so re-opening one costs no render either.
 
 NOTE ON THE SPLIT
 -----------------
 The long dataloader runs with split "all" while data.params.validation is split
 "val", so by default only ~10% of browsable episodes would have cached latents to
-predict from. --pred-split defaults to "all" so every cached episode can be
+predict from. pred_split defaults to "all" so every cached episode can be
 predicted; the status line then shows whether the open episode is train or val,
-because a prediction on a train episode was fitted on that very trajectory. Pass
---pred-split val to restrict predictions to genuinely unseen episodes.
-   fps          playback speed; the dataset itself is 2 Hz.
-   min dist / min |angle| / min frames
-                the same three episode filters as visualize_dataset.py and
-                test_model.py's EPISODE_FILTERS. Applying them makes the kernel
-                scan every episode's trajectory once (slow on navtrain, cached
-                afterwards); n/p then walk only the matching episodes.
-
-The first call is slow (the kernel builds the dataset index and loads the
-checkpoint); everything is cached in the kernel afterwards, so reopening another
-episode only costs the BEV render.
+because a prediction on a train episode was fitted on that very trajectory. Set
+pred_split to "val" to restrict predictions to genuinely unseen episodes.
 """
 
 import argparse
@@ -93,104 +84,84 @@ from PIL import Image, ImageTk
 
 from kernel_client import KernelClient
 
-# Default location of the orbis checkout on the cluster; the kernel is chdir'd
-# here so "exp_navsim/config.yaml" resolves as it does in the shell.
-DEFAULT_REPO = "/scratch/local/velikanov/work/orbis"
+# --------------------------------------------------------------------------- #
+# Every tunable. The command line overrides these; the GUI number fields write
+# back into them, so this dict is the single source of truth at runtime.
+# --------------------------------------------------------------------------- #
+SETTINGS = {
+    # --- connection ---
+    "url": "http://localhost:8888",
+    "token": os.environ.get("JUPYTER_TOKEN", ""),
+    "kernel_id": None,                  # None = reuse the first running kernel
+    "repo": "/scratch/local/velikanov/work/orbis",
+    "config": "exp_navsim/config.yaml",
+
+    # --- episode filter (same criteria as test_model.py's EPISODE_FILTERS) ---
+    "min_distance": 20.0,               # m driven
+    "min_angle": 50.0,                  # deg between initial heading and start->end
+    "min_frames": 20,                   # frames in the episode
+
+    # --- model ---
+    "ckpt": None,
+    "pred_split": "all",                # which cached episodes may be predicted
+    "total_len": 20,                    # model window: context + predicted frames
+    "samples": 0,                       # 0 = the model's num_val_samples
+
+    # --- rendering ---
+    "cameras": "front",                 # "front" | "surround"
+    "bev": True,
+    "bev_size": 512,                    # BEV panel render size in px
+    "width": 768,                       # final frame width in px (0 = as composited)
+    "quality": 85,                      # JPEG quality
+
+    # --- playback / buffering ---
+    "fps": 2.0,                         # the dataset itself is 2 Hz
+    "loop": False,
+    "neighbours": 3,                    # episodes buffered either side of the current
+    "batch": 8,                         # frames per kernel request
+}
+
+# Options the kernel needs for rendering; sent once by connect().
+_REMOTE_OPTS = ("config", "cameras", "bev", "bev_size", "width", "quality")
 
 
 class Prefetcher(threading.Thread):
-    """Keeps a window of frames rendered and in memory ahead of the playhead.
+    """Buffers whole episodes in the background; the GUI never waits on it.
 
-    This is what makes remote playback feel like video: rendering (and the
-    per-frame model inference) happens on the cluster while the GUI plays out of
-    a local cache, so neither the round trip nor the sampling shows up as a
-    stutter.
+    Work is driven by a `plan`: a list of episode ids in priority order (the one
+    on screen first, then its neighbours outwards). The thread walks the plan,
+    fetching each episode's geometry and then every one of its frames, so by the
+    time you press n the next episode is usually already complete.
 
-    It also owns the ONLY reference to the kernel. The GUI thread must never
-    touch it — a single websocket cannot carry two execute_request/reply pairs at
-    once — so GUI requests arrive as `commands` and come back as `results`.
+    It also owns the ONLY reference to the kernel — a single websocket cannot
+    carry two execute_request/reply pairs at once — so GUI requests arrive as
+    `commands` and come back as `results`.
     """
 
-    def __init__(self, kernel, args):
+    def __init__(self, kernel, settings):
         super().__init__(daemon=True)
-        self.kernel = kernel
-        self.batch, self.lookahead = args.batch, args.lookahead
-        self.quality, self.max_width = args.quality, args.max_width
-        self.total_len, self.num_samples = args.total_len, args.samples
-        self.cache = {}                       # index -> JPEG bytes, or an error string
+        self.kernel, self.settings = kernel, settings
+        self.cache = {}                  # (episode, frame) -> JPEG bytes | error str
+        self.infos = {}                  # episode -> geometry dict (small, kept forever)
+        self.plan = []                   # episode ids, highest priority first
         self.lock = threading.Lock()
-        self.cursor = 0                       # playhead; written by the GUI thread
-        self.n = 0                            # frames in the open episode
-        # Bumped whenever the cache stops being valid (new episode, new model
-        # window). A fetch that started before the bump must not commit its
-        # frames — they were rendered against the old settings.
+        self.total_len = settings["total_len"]
+        # Bumped whenever cached frames stop being valid (a new model window).
+        # A fetch that started before the bump must not commit its frames.
         self.version = 0
-        self.busy = False                     # a command is running (status line)
-        self.commands = queue.Queue()         # (kind, code) from the GUI
-        self.results = queue.Queue()          # (kind, payload) back to the GUI
+        self.busy = ""                   # name of the running command, for the status
+        self.commands = queue.Queue()    # (kind, code) from the GUI
+        self.results = queue.Queue()     # (kind, payload) back to the GUI
         self.stopped = threading.Event()
 
-    def run(self):
-        while not self.stopped.is_set():
-            # Commands first, so a seek or a filter change never waits behind a
-            # batch of frames that is about to be thrown away anyway.
-            if not self.commands.empty():
-                self._run_command(self.commands.get())
-                continue
-            with self.lock:
-                start, version, total_len = self._next_gap(), self.version, self.total_len
-                stop = min(start + self.batch, self.n) if start is not None else 0
-            if start is None:                 # window full -> nothing to do
-                time.sleep(0.05)
-                continue
-            try:
-                frames, note = self.kernel.fetch_frames(
-                    start, stop, self.quality, self.max_width, total_len, self.num_samples)
-                if note:
-                    self.results.put(("error", note))
-            except Exception as e:            # kernel died / tunnel dropped: keep the GUI alive
-                self.results.put(("error", f"prefetch: {e}"))
-                time.sleep(1.0)
-                continue
-            with self.lock:
-                if version == self.version:   # still valid: nothing invalidated it meanwhile
-                    self.cache.update(frames)
-
-    def _run_command(self, command):
-        """Run one GUI request on the kernel and post the parsed reply back."""
-        kind, code = command
-        self.busy = True
-        try:
-            result = self.kernel.call_json(code)
-            if kind == "open":                # a new episode invalidates everything
-                with self.lock:
-                    self.cache.clear()
-                    self.cursor, self.n = 0, result["num_frames"]
-                    self.version += 1
-            self.results.put((kind, result))
-        except Exception as e:
-            self.results.put(("error", f"{type(e).__name__}: {e}"))
-        finally:
-            self.busy = False
-
-    def _next_gap(self):
-        """First index in [cursor, cursor + lookahead) that is not cached yet.
-
-        Caller holds the lock.
-        """
-        for i in range(self.cursor, min(self.cursor + self.lookahead, self.n)):
-            if i not in self.cache:
-                return i
-        return None
-
-    # --- called from the GUI thread ------------------------------------------ #
-    def get(self, i):
+    # --- GUI-facing ---------------------------------------------------------- #
+    def set_plan(self, episodes):
+        """Replace the buffering plan and drop frames outside it."""
         with self.lock:
-            return self.cache.get(i)
-
-    def set_cursor(self, i):
-        with self.lock:
-            self.cursor = i
+            self.plan = list(episodes)
+            keep = set(self.plan)
+            for key in [k for k in self.cache if k[0] not in keep]:
+                del self.cache[key]
 
     def set_total_len(self, total_len):
         """Change the model window; every cached frame was drawn with the old one."""
@@ -200,37 +171,113 @@ class Prefetcher(threading.Thread):
                 self.cache.clear()
                 self.version += 1
 
-    def buffered(self):
-        """How many consecutive frames are ready from the playhead onwards."""
+    def get(self, episode, frame):
         with self.lock:
-            i = self.cursor
-            while i in self.cache:
-                i += 1
-            return i - self.cursor
+            return self.cache.get((episode, frame))
+
+    def progress(self, episode):
+        """(frames buffered here, frames total, episodes complete, episodes planned)."""
+        with self.lock:
+            info = self.infos.get(episode)
+            total = info["num_frames"] if info else 0
+            here = sum((episode, i) in self.cache for i in range(total))
+            done = 0
+            for ep in self.plan:
+                other = self.infos.get(ep)
+                if other and all((ep, i) in self.cache
+                                 for i in range(other["num_frames"])):
+                    done += 1
+            return here, total, done, len(self.plan)
+
+    # --- worker -------------------------------------------------------------- #
+    def run(self):
+        while not self.stopped.is_set():
+            # Commands first: a filter change or a checkpoint load must not wait
+            # behind a queue of frames.
+            if not self.commands.empty():
+                self._run_command(self.commands.get())
+                continue
+            job = self._next_job()
+            if job is None:
+                time.sleep(0.05)
+                continue
+            self._run_job(job)
+
+    def _run_command(self, command):
+        """Run one GUI request on the kernel and post the parsed reply back."""
+        kind, code = command
+        self.busy = kind
+        try:
+            self.results.put((kind, self.kernel.call_json(code)))
+        except Exception as e:
+            self.results.put(("error", f"{kind}: {type(e).__name__}: {e}"))
+        finally:
+            self.busy = ""
+
+    def _next_job(self):
+        """The most valuable outstanding piece of work, or None if fully buffered.
+
+        Walks the plan in order, so the episode on screen is always finished
+        before a neighbour is started.
+        """
+        with self.lock:
+            plan, version, total_len = list(self.plan), self.version, self.total_len
+            for episode in plan:
+                info = self.infos.get(episode)
+                if info is None:
+                    return ("info", episode, 0, version, total_len)
+                for i in range(info["num_frames"]):
+                    if (episode, i) not in self.cache:
+                        return ("frames", episode, i, version, total_len)
+        return None
+
+    def _run_job(self, job):
+        kind, episode, start, version, total_len = job
+        try:
+            if kind == "info":
+                info = self.kernel.call_json(f"viewer_prepare({episode})")
+                with self.lock:
+                    self.infos[episode] = info
+                self.results.put(("prepared", info))
+                return
+            stop = start + self.settings["batch"]
+            frames, note = self.kernel.fetch_frames(
+                episode, start, stop, total_len, self.settings["samples"])
+            if note:
+                self.results.put(("error", note))
+        except Exception as e:           # kernel died / tunnel dropped: stay alive
+            self.results.put(("error", f"buffering: {type(e).__name__}: {e}"))
+            time.sleep(1.0)
+            return
+        with self.lock:
+            if version == self.version:  # nothing invalidated these meanwhile
+                got = {(episode, i): data for i, data in frames.items()}
+                # Never leave a hole the planner would pick again next pass: a
+                # frame the kernel did not return is recorded as an error, or the
+                # same span would be refetched forever.
+                info = self.infos.get(episode)
+                limit = min(stop, info["num_frames"] if info else stop)
+                for i in range(start, limit):
+                    got.setdefault((episode, i), "no frame returned")
+                self.cache.update(got)
 
 
 class Viewer:
     """Tk window: the frame, a row of number fields, and a status line."""
 
-    def __init__(self, prefetcher, args, num_episodes):
-        self.pre, self.args = prefetcher, args
-        self.fps = args.fps
-        # Every episode of the dataloader is browsable straight away; applying a
-        # filter narrows this list, it does not create it.
-        self.episodes = list(range(num_episodes))
-        self.pos = min(max(args.episode, 0), max(num_episodes - 1, 0))
-        self.applied_filter = {"min_distance": args.min_distance,
-                               "min_angle": args.min_angle,
-                               "min_frames": args.min_frames}
-        self.info, self.n = {}, 0
-        self.idx, self.playing, self.loading = 0, True, True
-        self.message = ""
-        self.photo = None                     # Tk drops images that nothing references
-        self.drawn = None                     # (index, w, h) actually on screen
+    def __init__(self, prefetcher, settings):
+        self.pre, self.settings = prefetcher, settings
+        self.episodes = []                    # dataset episode ids passing the filter
+        self.pos = 0                          # index into self.episodes
+        self.n = 0
+        self.idx, self.playing = 0, True
+        self.message = "scanning episodes (slow the first time)"
+        self.photo = None                     # Tk drops images nothing references
+        self.drawn = None                     # (episode, index, w, h) on screen
 
         self.root = tk.Tk()
         self.root.title("navsim episode viewer")
-        self.root.geometry("1280x900")
+        self.root.geometry("900x1000")
         self.view = tk.Label(self.root, bg="black")
         self.view.pack(fill="both", expand=True)
         self._build_controls()
@@ -241,32 +288,34 @@ class Viewer:
                              ("<Left>", lambda: self._step(-1)),
                              ("<Right>", lambda: self._step(1)),
                              ("<Home>", self._rewind),
-                             ("n", self._next_episode), ("p", self._prev_episode),
+                             ("n", lambda: self._open(self.pos + 1)),
+                             ("p", lambda: self._open(self.pos - 1)),
                              ("q", self._quit), ("<Escape>", self._quit)):
             self.root.bind(key, self._shortcut(handler))
         self.root.protocol("WM_DELETE_WINDOW", lambda: self._quit())
 
     def _build_controls(self):
-        """The number fields: model window, playback speed, three episode filters."""
-        args = self.args
-        self.spec = (("total_len", "model len", args.total_len),
-                     ("fps", "fps", args.fps),
-                     ("min_distance", "min dist (m)", args.min_distance),
-                     ("min_angle", "min |angle| (deg)", args.min_angle),
-                     ("min_frames", "min frames", args.min_frames))
+        """Number fields, each bound to its SETTINGS key."""
+        self.spec = (("total_len", "model len"), ("fps", "fps"),
+                     ("min_distance", "min dist (m)"), ("min_angle", "min |angle| (deg)"),
+                     ("min_frames", "min frames"))
         row = tk.Frame(self.root)
         row.pack(fill="x")
         self.fields = {}
-        for name, label, default in self.spec:
+        for name, label in self.spec:
             tk.Label(row, text=label).pack(side="left", padx=(8, 2))
             entry = tk.Entry(row, width=6)
-            entry.insert(0, f"{default:g}")
+            entry.insert(0, f"{self.settings[name]:g}")
             entry.bind("<Return>", lambda _: self._apply())
             entry.pack(side="left")
             self.fields[name] = entry
         tk.Button(row, text="apply", command=self._apply).pack(side="left", padx=10)
         tk.Label(row, text="space=pause  arrows=step  n/p=episode  q=quit",
                  fg="gray40").pack(side="right", padx=8)
+
+    @property
+    def episode(self):
+        return self.episodes[self.pos] if self.episodes else None
 
     # --- keys ---------------------------------------------------------------- #
     @staticmethod
@@ -294,107 +343,117 @@ class Viewer:
     def _rewind(self):
         self.idx = 0
 
-    def _next_episode(self):
-        self._open(self.pos + 1)
-
-    def _prev_episode(self):
-        self._open(self.pos - 1)
-
     def _quit(self):
         self.pre.stopped.set()
         self.root.destroy()
 
-    # --- kernel requests ----------------------------------------------------- #
-    def _open_code(self, episode):
-        a = self.args
-        return (f"viewer_open({a.config!r}, {episode}, {a.cameras!r}, "
-                f"bev={not a.no_bev}, bev_size={a.bev_size})")
+    # --- episode navigation -------------------------------------------------- #
+    def _plan(self):
+        """Episodes to keep buffered: current first, then neighbours outwards.
 
-    def _filter_code(self, values):
-        return (f"viewer_filter({values['min_distance']}, {values['min_angle']}, "
-                f"{int(values['min_frames'])}, {self.args.config!r})")
+        That order is also the fetch order, so the episode on screen is always
+        finished before anything is spent on a neighbour.
+        """
+        if not self.episodes:
+            return []
+        offsets = [0]
+        for d in range(1, self.settings["neighbours"] + 1):
+            offsets += [d, -d]
+        ids, seen = [], set()
+        for off in offsets:
+            episode = self.episodes[(self.pos + off) % len(self.episodes)]
+            if episode not in seen:
+                seen.add(episode)
+                ids.append(episode)
+        return ids
 
     def _open(self, pos):
-        """Ask the kernel for another episode; `pos` wraps around the current list."""
+        """Switch episode. Purely local — no round trip, so it is instant."""
         if not self.episodes:
             return
         self.pos = pos % len(self.episodes)
-        self.loading, self.idx = True, 0
-        self.message = f"opening episode {self.episodes[self.pos]}"
-        self.pre.commands.put(("open", self._open_code(self.episodes[self.pos])))
+        self.idx, self.playing, self.drawn = 0, True, None
+        self.pre.set_plan(self._plan())
 
     def _apply(self):
-        """Commit the number fields.
+        """Commit the number fields into SETTINGS.
 
         fps takes effect on the next tick and the model window on the next fetch
-        (it invalidates the cache, since every cached frame was drawn with the old
-        one). The three filters only go to the kernel when they actually changed —
+        (it invalidates every buffered frame, which were drawn with the old one).
+        The three filters only go to the kernel when they actually changed —
         re-sending them would trigger the full dataset scan for nothing.
         """
         try:
-            values = {name: float(self.fields[name].get()) for name, _, _ in self.spec}
+            values = {name: float(self.fields[name].get()) for name, _ in self.spec}
         except ValueError:
             self.message = "number fields must be numeric"
             return
-        self.fps = max(values["fps"], 0.1)
-        self.pre.set_total_len(max(int(values["total_len"]), 1))
+        before = [self.settings[k] for k in ("min_distance", "min_angle", "min_frames")]
+        self.settings.update(fps=max(values["fps"], 0.1),
+                             total_len=max(int(values["total_len"]), 1),
+                             min_distance=values["min_distance"],
+                             min_angle=values["min_angle"],
+                             min_frames=int(values["min_frames"]))
+        self.pre.set_total_len(self.settings["total_len"])
         self.drawn = None                     # force a redraw with the new window
         self.root.focus_set()                 # hand the keyboard back to the window
 
-        wanted = {k: values[k] for k in ("min_distance", "min_angle", "min_frames")}
-        if wanted != self.applied_filter:
-            self.applied_filter = wanted
+        after = [self.settings[k] for k in ("min_distance", "min_angle", "min_frames")]
+        if after != before:
             self.message = "scanning episodes (slow the first time)"
-            self.pre.commands.put(("filter", self._filter_code(wanted)))
+            self.pre.commands.put(("filter", filter_code(self.settings)))
 
     def _drain_results(self):
-        """Apply whatever the prefetcher finished since the last tick."""
+        """Apply whatever the worker finished since the last tick."""
         while True:
             try:
                 kind, payload = self.pre.results.get_nowait()
             except queue.Empty:
                 return
-            if kind == "open":
-                self.info, self.n = payload, payload["num_frames"]
-                self.idx, self.loading, self.playing, self.drawn = 0, False, True, None
-                self.message = payload.get("note", "")
-                self.root.title(f"episode {payload['episode']} — {payload['token']}")
-            elif kind == "filter":
+            if kind == "filter":
                 matches = payload["episodes"]
                 self.message = (f"{len(matches)}/{payload['total']} episodes match"
-                                if matches else "no episode matches — keeping the full list")
-                # Falling back to the current list matters on startup: without it a
-                # filter that matches nothing would leave no episode open at all.
-                self.episodes = matches or self.episodes
-                self._open(0)
+                                if matches else "no episode matches the filter")
+                if matches:
+                    self.episodes, self.pos = matches, 0
+                    self._open(0)
+            elif kind == "prepared":
+                if payload["episode"] == self.episode:
+                    self.message = payload.get("note", "")
+            elif kind == "model":
+                self.message = f"model on {payload['device']}, {payload['split']} split"
             elif kind == "error":
-                self.loading, self.message = False, payload
+                self.message = payload
 
     # --- playback ------------------------------------------------------------ #
     def _tick(self):
-        """One playback step. Advances only when the next frame is already cached,
+        """One playback step. Advances only when the next frame is already buffered,
         so a slow patch of the stream stalls the video instead of skipping it."""
         self._drain_results()
-        frame = None if self.loading else self.pre.get(self.idx)
+        episode = self.episode
+        info = self.pre.infos.get(episode) if episode is not None else None
+        self.n = info["num_frames"] if info else 0
+
+        frame = self.pre.get(episode, self.idx) if info else None
         if frame is not None:
-            self._show(frame)
+            self._show(episode, frame)
             if self.playing:
                 nxt = self.idx + 1
                 if nxt >= self.n:
-                    self.idx, self.playing = (0, True) if self.args.loop else (self.n - 1, False)
+                    self.idx, self.playing = ((0, True) if self.settings["loop"]
+                                              else (self.n - 1, False))
                 else:
                     self.idx = nxt
-        self.pre.set_cursor(self.idx)
-        self._update_status(buffering=frame is None)
-        self.root.after(int(1000 / self.fps), self._tick)
+        self._update_status(info, buffering=frame is None)
+        self.root.after(int(1000 / self.settings["fps"]), self._tick)
 
-    def _show(self, frame):
-        """Render a cached frame, scaled to fit the window (never scaled up)."""
+    def _show(self, episode, frame):
+        """Render a buffered frame, scaled to fit the window (never scaled up)."""
         w, h = self.view.winfo_width(), self.view.winfo_height()
-        if self.drawn == (self.idx, w, h):    # nothing changed (e.g. paused) -> skip
+        if self.drawn == (episode, self.idx, w, h):   # nothing changed -> skip
             return
-        self.drawn = (self.idx, w, h)
-        if isinstance(frame, str):            # the kernel failed on this frame
+        self.drawn = (episode, self.idx, w, h)
+        if isinstance(frame, str):                    # the kernel failed on this frame
             self.view.configure(image="", text=f"frame {self.idx}\n{frame}", fg="red")
             return
         img = Image.open(io.BytesIO(frame))
@@ -406,107 +465,80 @@ class Viewer:
         self.photo = ImageTk.PhotoImage(img)
         self.view.configure(image=self.photo, text="")
 
-    def _update_status(self, buffering):
-        if self.loading or self.pre.busy:
-            state = "working"
+    def _update_status(self, info, buffering):
+        here, total, done, planned = self.pre.progress(self.episode)
+        if self.pre.busy:
+            state = self.pre.busy
         elif buffering:
             state = "buffering"
         else:
             state = "playing" if self.playing else "paused"
-        panels = ("BEV+pred" if self.info.get("predicted")
-                  else "BEV" if self.info.get("bev") else "cameras only")
-        if self.info.get("predicted"):
-            panels += f" ({self.info.get('split', '?')})"
-        bits = [f"ep {self.info.get('episode', '?')} [{self.pos + 1}/{len(self.episodes)}]",
-                f"frame {self.idx + 1}/{max(self.n, 1)}",
-                state, f"buf {self.pre.buffered()}", panels,
-                f"len {self.pre.total_len}", f"{self.fps:g} fps"]
-        text = "  |  ".join(bits)
-        self.status.configure(text=f" {text}" + (f"   —   {self.message}" if self.message else ""))
+        panels = ("BEV+pred" if (info or {}).get("predicted")
+                  else "BEV" if (info or {}).get("bev") else "cameras only")
+        if (info or {}).get("predicted"):
+            panels += f" ({info.get('split', '?')})"
+        bits = [f"ep {self.episode} [{self.pos + 1}/{len(self.episodes)}]",
+                f"frame {self.idx + 1}/{max(self.n, 1)}", state,
+                f"buf {here}/{max(total, 1)} eps {done}/{max(planned, 1)}",
+                panels, f"len {self.settings['total_len']}",
+                f"{self.settings['fps']:g} fps"]
+        self.status.configure(text=" " + "  |  ".join(bits)
+                              + (f"   —   {self.message}" if self.message else ""))
 
     def run(self):
-        # Opening --episode directly skips the (slow) dataset scan; a filter given
-        # on the command line asks for it up front instead.
-        args = self.args
-        if args.min_distance or args.min_angle or args.min_frames:
-            self.message = "scanning episodes (slow the first time)"
-            self.pre.commands.put(("filter", self._filter_code(self.applied_filter)))
-        else:
-            self._open(self.pos)
         self.root.after(0, self._tick)
         self.root.mainloop()
 
 
-def connect(args):
-    """Open the kernel, push the remote half of the viewer, load the checkpoint."""
-    kernel = KernelClient(args.url, args.token, args.kernel_id).connect()
+def filter_code(settings):
+    return (f"viewer_filter({settings['min_distance']}, {settings['min_angle']}, "
+            f"{int(settings['min_frames'])})")
+
+
+def connect(settings):
+    """Open the kernel and push the remote half of the viewer into it."""
+    kernel = KernelClient(settings["url"], settings["token"],
+                          settings["kernel_id"]).connect()
     print(f"kernel {kernel.kernel_id}")
 
     # chdir so the kernel resolves "exp_navsim/config.yaml" like the shell does,
     # and put the repo on sys.path in case the kernel was started elsewhere.
-    kernel.execute(
-        f"import os, sys\n"
-        f"os.chdir({args.repo!r})\n"
-        f"sys.path.insert(0, {args.repo!r}) if {args.repo!r} not in sys.path else None\n")
+    repo = settings["repo"]
+    kernel.execute(f"import os, sys\n"
+                   f"os.chdir({repo!r})\n"
+                   f"sys.path.insert(0, {repo!r}) if {repo!r} not in sys.path else None\n")
     kernel.execute((Path(__file__).parent / "remote_episode.py").read_text())
-
-    if args.ckpt:
-        print(f"loading {args.ckpt} and indexing the latent cache (slow the first time) ...")
-        print(kernel.call_json(
-            f"viewer_model({args.ckpt!r}, {args.config!r}, {args.pred_split!r})"))
+    options = {k: settings[k] for k in _REMOTE_OPTS}
+    print(kernel.call_json(f"viewer_config(**{options!r})"))
     return kernel
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--url", default="http://localhost:8888", help="forwarded Jupyter server")
-    ap.add_argument("--token", default=os.environ.get("JUPYTER_TOKEN", ""))
-    ap.add_argument("--kernel-id", default=None,
-                    help="reuse a specific kernel (default: the first running one)")
-    ap.add_argument("--repo", default=DEFAULT_REPO, help="orbis checkout on the cluster")
-    ap.add_argument("--config", default="exp_navsim/config.yaml")
-    ap.add_argument("--episode", type=int, default=0, help="episode to open first")
-    ap.add_argument("--cameras", choices=("surround", "front"), default="surround")
-    ap.add_argument("--list", action="store_true", help="print the episode count and exit")
-    # Model / BEV panel.
-    ap.add_argument("--ckpt", default=None,
-                    help="checkpoint whose sampled trajectories are drawn on the BEV")
-    ap.add_argument("--total-len", type=int, default=20,
-                    help="model window: context + predicted frames (editable in the GUI)")
-    ap.add_argument("--samples", type=int, default=0,
-                    help="trajectory samples per frame (0 = the model's num_val_samples)")
-    ap.add_argument("--pred-split", choices=("all", "val", "train"), default="all",
-                    help="which cached episodes can be predicted; 'all' matches the "
-                         "long dataloader, 'val' restricts to unseen episodes")
-    ap.add_argument("--no-bev", action="store_true",
-                    help="skip the map BEV (needs navsim + the nuPlan maps)")
-    ap.add_argument("--bev-size", type=int, default=512, help="BEV panel size in px")
-    # Initial episode filter; the same three fields are editable in the GUI.
-    ap.add_argument("--min-distance", type=float, default=0.0, help="m driven")
-    ap.add_argument("--min-angle", type=float, default=0.0, help="deg turned")
-    ap.add_argument("--min-frames", type=int, default=0)
-    # Playback.
-    ap.add_argument("--fps", type=float, default=2.0, help="playback speed (dataset is 2 Hz)")
-    ap.add_argument("--loop", action="store_true", help="restart at the end instead of pausing")
-    # Transport tuning: quality/max-width trade bandwidth for sharpness, batch
-    # amortises the round trip (and batches the model), lookahead is how far ahead
-    # the cache runs.
-    ap.add_argument("--quality", type=int, default=80, help="JPEG quality")
-    ap.add_argument("--max-width", type=int, default=1280, help="downscale wider frames (0 = off)")
-    ap.add_argument("--batch", type=int, default=8, help="frames per kernel request")
-    ap.add_argument("--lookahead", type=int, default=64, help="frames to keep buffered ahead")
-    args = ap.parse_args()
+    # Every flag defaults to its SETTINGS entry, so the dict stays the one place
+    # to change a default.
+    for name, value in SETTINGS.items():
+        flag = "--" + name.replace("_", "-")
+        if isinstance(value, bool):
+            ap.add_argument(flag, dest=name, action="store_true", default=value)
+            ap.add_argument("--no-" + name.replace("_", "-"), dest=name,
+                            action="store_false")
+        else:
+            kind = type(value) if value is not None else str
+            ap.add_argument(flag, dest=name, type=kind, default=value)
+    SETTINGS.update(vars(ap.parse_args()))
 
-    kernel = connect(args)
-    print("building the dataset index (slow the first time) ...")
-    count = kernel.call_json(f"viewer_list({args.config!r})")["num_episodes"]
-    print(f"{count} episodes")
-    if args.list:
-        return
-
-    prefetcher = Prefetcher(kernel, args)
+    kernel = connect(SETTINGS)
+    prefetcher = Prefetcher(kernel, SETTINGS)
     prefetcher.start()
-    Viewer(prefetcher, args, count).run()
+    # Both are queued, so the window opens immediately and the slow work (loading
+    # the checkpoint, scanning the dataset) reports itself in the status line.
+    if SETTINGS["ckpt"]:
+        prefetcher.commands.put(("model", f"viewer_model({SETTINGS['ckpt']!r}, "
+                                          f"{SETTINGS['config']!r}, "
+                                          f"{SETTINGS['pred_split']!r})"))
+    prefetcher.commands.put(("filter", filter_code(SETTINGS)))
+    Viewer(prefetcher, SETTINGS).run()
     kernel.close()
 
 

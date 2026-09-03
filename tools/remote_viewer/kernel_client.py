@@ -133,11 +133,13 @@ class KernelClient:
                 return json.loads(line)
         raise RemoteError(f"expected a JSON line, got:\n{text}")
 
-    def fetch_frames(self, start, stop, quality, max_width, total_len, num_samples):
-        """Render frames [start, stop) remotely.
+    def fetch_frames(self, episode, start, stop, total_len, num_samples):
+        """Render frames [start, stop) of `episode` remotely.
 
         Returns ({index: JPEG bytes | error str}, note), where `note` is a
         non-fatal remote complaint (e.g. the model failed but the BEV still drew).
+        Quality and width live in the kernel's options (see viewer_config), so
+        they are not repeated on every call.
 
         One execute_request per *batch*: the SSH round trip (tens of ms) is
         amortised over `stop - start` frames instead of paid per frame, and the
@@ -146,7 +148,7 @@ class KernelClient:
         import base64
 
         msgs = self.execute(
-            f"viewer_frames({start}, {stop}, quality={quality}, max_width={max_width}, "
+            f"viewer_frames({episode}, {start}, {stop}, "
             f"total_len={total_len}, num_samples={num_samples})")
         frames, note = {}, ""
         for m in msgs:
@@ -156,6 +158,8 @@ class KernelClient:
                 continue
             if "note" in tag:               # went wrong, but cost no frame
                 note = tag["note"]
+            elif tag.get("episode") != episode:
+                continue                    # not ours (a reply we did not ask for)
             elif "error" in tag:
                 frames[tag["index"]] = tag["error"]
             else:
