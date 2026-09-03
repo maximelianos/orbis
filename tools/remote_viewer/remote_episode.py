@@ -335,7 +335,7 @@ def _predict(state, starts, total_len, num_samples):
         for j, start in enumerate(todo):
             # Undo the input rotation, then place the path at the ego position.
             heading = _heading_at(gt, start)
-            cache[(total_len, start)] = preds[j] #(_rotate_path(preds[j], heading)
+            cache[(total_len, start)] = (preds[j] #(_rotate_path(preds[j], heading)
                                          + gt[min(start, len(gt) - 1)])
     return {s: cache[(total_len, s)] for s in starts if (total_len, s) in cache}
 
