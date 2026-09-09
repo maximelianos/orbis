@@ -25,11 +25,22 @@ class TrajectoryNorm(nn.Module):
         self.initialized = nn.Parameter(torch.zeros(1, dtype=torch.bool), requires_grad=False)
 
     @torch.no_grad()
-    def update(self, velocity):
-        """Update running mean/variance from a batch of velocities (B, T, 2)."""
+    def update(self, velocity, mask=None):
+        """Update running mean/variance from a batch of velocities (B, T, 2).
+
+        `mask` is an optional (B, T) frame-validity mask: padded frames of
+        variable-length episodes are zeros and would otherwise pull the
+        statistics towards zero.
+        """
         # reduce all but the channel dim
-        batch_mean = velocity.mean(dim=(0, 1))
-        batch_var = velocity.var(dim=(0, 1), unbiased=False)
+        if mask is None:
+            batch_mean = velocity.mean(dim=(0, 1))
+            batch_var = velocity.var(dim=(0, 1), unbiased=False)
+        else:
+            w = mask.to(velocity.dtype).unsqueeze(-1)              # (B, T, 1)
+            count = w.sum().clamp(min=1.0)
+            batch_mean = (velocity * w).sum(dim=(0, 1)) / count
+            batch_var = (((velocity - batch_mean) ** 2) * w).sum(dim=(0, 1)) / count
 
         if bool(self.initialized):
             # Exponential moving average
@@ -49,10 +60,10 @@ class TrajectoryNorm(nn.Module):
     def std(self):
         return torch.sqrt(self.var) + self.eps
 
-    def normalize(self, velocity):
-        """(velocity - mean) / std, updating the EMA only while training."""
+    def normalize(self, velocity, mask=None):
+        """(velocity - mean) / std, updating the EMA (over valid frames) while training."""
         if self.training:
-            self.update(velocity)
+            self.update(velocity, mask)
         return (velocity - self.mean) / self.std
 
     def denormalize(self, velocity):

@@ -57,10 +57,10 @@ start=`date +%s`
 # python train_nuplan.py -c exp_navsim/config.yaml --max_steps 1000000 --logdir logs_navsim
 # python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 1000
 
-python -m exp_navsim.test_decode       --config exp_navsim/config.yaml --num 3
-python train_nuplan.py -c exp_navsim/config.yaml --max_steps 200000 --logdir logs_navsim
-python -m exp_navsim.test_model --config exp_navsim/config.yaml \
-    --ckpt logs_navsim/2026-07-22T23-01-41_config/checkpoints/last.ckpt --num 6
+#python -m exp_navsim.test_decode       --config exp_navsim/config.yaml --num 3
+python train_nuplan.py -c exp_navsim/config.yaml --max_steps 1000000 --logdir logs_navsim
+#python -m exp_navsim.test_model --config exp_navsim/config.yaml \
+#    --ckpt logs_navsim/2026-07-22T23-01-41_config/checkpoints/last.ckpt --num 6
 python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 0
 
 
@@ -77,22 +77,22 @@ python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf -
 # cd /dsk/scratch/velikanm
 # hf download qixuewei/nuReasoning   --repo-type dataset   --local-dir ./nuReasoning   --max-workers 2
 
-cd /scratch/local/velikanov/work/orbis/nuReasoning
-mkdir -p data_unzipped
+# cd /scratch/local/velikanov/work/orbis/nuReasoning
+# mkdir -p data_unzipped
 
-find data -name "*.zip" | while read -r zip_file; do
-    rel_path="${zip_file#data/}"
-    rel_dir="$(dirname "$rel_path")"
-    clip_name="$(basename "$zip_file" .zip)"
+# find data -name "*.zip" | while read -r zip_file; do
+#     rel_path="${zip_file#data/}"
+#     rel_dir="$(dirname "$rel_path")"
+#     clip_name="$(basename "$zip_file" .zip)"
 
-    out_dir="data_unzipped/${rel_dir}/${clip_name}"
-    mkdir -p "$out_dir"
+#     out_dir="data_unzipped/${rel_dir}/${clip_name}"
+#     mkdir -p "$out_dir"
 
-    unzip -n "$zip_file" -d "$out_dir"
-done
+#     unzip -n "$zip_file" -d "$out_dir"
+# done
 
-end=`date +%s`
-runtime=$((end-start))
+# end=`date +%s`
+# runtime=$((end-start))
 
 echo Job execution complete.
 echo Runtime: $runtime

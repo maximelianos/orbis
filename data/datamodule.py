@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 
 from omegaconf import ListConfig, DictConfig
 
-from main import logger, instantiate_from_config
+from main import logger, instantiate_from_config, get_obj_from_str
 
 
 class DataModuleFromConfig(pl.LightningDataModule):
@@ -28,14 +28,24 @@ class DataModuleFromConfig(pl.LightningDataModule):
         persistent_workers: Keep workers alive between iterations (if workers > 0).
         drop_last_train: Drop last incomplete train batch.
         shuffle_train: Shuffle training data.
+        collate_fn: Dotted path to a collate function (e.g.
+            "exp_navsim.data.collate.pad_collate" for variable-length episodes);
+            None uses the default PyTorch collate.
     """
     def __init__(self, batch_size, val_batch_size=None, train=None, validation=None, test=None,
-                 wrap=False, num_workers=None, dbg=False):
+                 wrap=False, num_workers=None, dbg=False, persistent_workers=True,
+                 collate_fn=None):
         super().__init__()
+        # Dotted path to a custom collate function (e.g. for variable-length
+        # episodes); None keeps the default PyTorch collate.
+        self.collate_fn = get_obj_from_str(collate_fn) if collate_fn is not None else None
         self.batch_size = batch_size
         self.val_batch_size = val_batch_size if val_batch_size is not None else batch_size
         self.dataset_configs = dict()
         self.num_workers = num_workers if num_workers is not None else batch_size*2
+        # keeps worker processes (and any in-worker state, e.g. the sample buffer)
+        # alive across epochs instead of respawning them at each epoch start
+        self.persistent_workers = persistent_workers and self.num_workers > 0
         if train is not None:
             self.dataset_configs["train"] = train
             self.train_dataloader = self._train_dataloader
@@ -73,17 +83,21 @@ class DataModuleFromConfig(pl.LightningDataModule):
         if self.dbg:
             # TODO originally shuffle=True in sampler
             sampler = DistributedSampler(self.datasets["train"], shuffle=False) # if self.trainer.use_ddp else None
-            return DataLoader(self.datasets["train"], batch_size=self.batch_size, 
-                              num_workers=self.num_workers, shuffle=False, pin_memory=True, drop_last=True, sampler=sampler)
+            return DataLoader(self.datasets["train"], batch_size=self.batch_size,
+                              num_workers=self.num_workers, shuffle=False, pin_memory=True, drop_last=True, sampler=sampler,
+                              persistent_workers=self.persistent_workers, collate_fn=self.collate_fn)
         else:
             return DataLoader(self.datasets["train"], batch_size=self.batch_size,
-                            num_workers=self.num_workers, shuffle=True, pin_memory=True, drop_last=True)
+                            num_workers=self.num_workers, shuffle=True, pin_memory=True, drop_last=True,
+                            persistent_workers=self.persistent_workers, collate_fn=self.collate_fn)
 
     def _val_dataloader(self):
         return DataLoader(self.datasets["validation"],
                           batch_size=self.val_batch_size,
-                          num_workers=self.num_workers, pin_memory=True)
+                          num_workers=self.num_workers, pin_memory=True,
+                          persistent_workers=self.persistent_workers, collate_fn=self.collate_fn)
 
     def _test_dataloader(self):
         return DataLoader(self.datasets["test"], batch_size=self.val_batch_size,
-                          num_workers=self.num_workers)
+                          num_workers=self.num_workers,
+                          persistent_workers=self.persistent_workers, collate_fn=self.collate_fn)

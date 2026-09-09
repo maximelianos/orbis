@@ -22,7 +22,7 @@ class BufferDataset(Dataset):
         max_buffer_size: int,
         replace_rate: float,   # fraction of replace_count
         replace_count: int,
-        enable_buffer: bool,
+        enable_buffer: bool = True,
         dataset_length: int = None,   # if None, use the source dataset's length
     ):
         super().__init__()

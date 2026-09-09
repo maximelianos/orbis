@@ -1,7 +1,7 @@
 """Produce a PDF of predicted trajectories on a fixed set of test episodes.
 
     python -m exp_navsim.test_model --config exp_navsim/config.yaml \
-        --ckpt logs_navsim/2026-07-22T23-01-41_config/checkpoints/last.ckpt --num 6
+        --ckpt logs_navsim/2026-08-21T14-45-31_config/checkpoints/last.ckpt --num 6
 
 Loads a trained checkpoint, runs inference `num_val_samples` times on the SAME
 fixed test episodes (deterministic windows, drawn from the validation episodes
@@ -26,6 +26,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from omegaconf import OmegaConf
 
 from util import instantiate_from_config
+from exp_navsim.data.collate import pad_collate
 from exp_navsim.model import NavsimTrajectoryModel
 from exp_navsim.visualize_dataset import trajectory_stats
 
@@ -41,14 +42,21 @@ EPISODE_FILTERS = {
 
 
 def _build_batch(dataset, indices, device):
-    """Stack samples from `dataset` at `indices` into a batched dict of tensors."""
-    batch = {}
-    for idx in tqdm(indices):
-        sample = dataset[int(idx)]
-        for k, v in sample.items():
-            if isinstance(v, torch.Tensor):
-                batch.setdefault(k, []).append(v)
-    return {k: torch.stack(v, 0).to(device) for k, v in batch.items()}
+    """Collate samples from `dataset` at `indices` into a batched dict of tensors.
+
+    Uses the same padding collate as training, so the episode-length settings of
+    the config (num_frames=0 -> whole, variable-length episodes) work here too.
+    """
+    samples = [dataset[int(idx)] for idx in tqdm(indices)]
+    batch = pad_collate(samples)
+    return {k: (v.to(device) if isinstance(v, torch.Tensor) else v)
+            for k, v in batch.items()}
+
+
+def _episode_length(batch, i):
+    """Valid (unpadded) number of frames of sample `i`."""
+    length = batch.get("metadata", {}).get("length")
+    return int(length[i]) if length is not None else batch["trajectory"].shape[1]
 
 
 def _filter_episodes(dataset, filters):
@@ -59,8 +67,9 @@ def _filter_episodes(dataset, filters):
     keep = []
     for i, path in enumerate(tqdm(dataset.files, desc="filtering episodes")):
         with h5py.File(path, "r") as f:
-            traj = f["trajectory"][:dataset.num_frames]
             total = f[dataset.latent_key].shape[0]
+            # Same window the model will see (num_frames=0 -> the whole episode).
+            traj = f["trajectory"][:dataset.window_length(total)]
         distance, steering, _ = trajectory_stats(traj)
         if (distance >= filters["min_distance"]
                 and abs(steering) >= filters["min_angle"]
@@ -171,7 +180,16 @@ def main():
 
 def _page(batch, i):
     from exp_navsim.draw import draw_episode
-    return draw_episode(batch, i, title=f"Test episode {i} — predicted trajectories")
+
+    # Drop the padding of this episode so the plots stop at its real last frame.
+    # The model predicts the full padded length for every sample.
+    length = _episode_length(batch, i)
+    page_batch = dict(batch)
+    page_batch["trajectory"] = batch["trajectory"][:, :length]
+    if "pred_trajectories" in batch:
+        page_batch["pred_trajectories"] = batch["pred_trajectories"][:, :, :length]
+
+    return draw_episode(page_batch, i, title=f"Test episode {i} — predicted trajectories")
 
 
 if __name__ == "__main__":

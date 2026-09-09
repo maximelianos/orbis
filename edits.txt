@@ -404,9 +404,26 @@ Prompt
 Write a new script test_rollout. It's like test_model, but hardcode a parameter total_points = 40, which are predicted autoregressively:
 the model receives its last predicted 
 
-
-
-
-
 - cross road filtering
 - training on maximum length
+- use saved intrinsics?
+
+### 13.08.2026
+
+- Trained on maximum length episodes
+  - Batch padding with collate_fn + length metadata
+  - Load only context latents in the dataloader
+  - Predict the maximum number of steps that are present in the batch.
+    Loss is calculated only from valid points - multiply prediction by a zero mask
+- Added multiple context image tokens
+  - Spatial block output: (B, T_img, N_tokens, D)
+- Predictions improved drastically
+
+
+Attention mask for padding
+
+Make an ssh data viewer with GUI, visualize model prediction with video.
+Pre-filter episodes for cross-roads based on map.
+We need the part of the episode, where the car doesn't turn yet, then we can get an intereseting distribution.
+
+SAE analysis of the intermediate tokens

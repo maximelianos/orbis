@@ -118,7 +118,8 @@ python -m exp_navsim.draw_bev          --config exp_navsim/config.yaml --num 3  
 python train_nuplan.py -c exp_navsim/config.yaml --max_steps 20000 --logdir logs_navsim
 python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 1000
 python -m exp_navsim.test_model --config exp_navsim/config.yaml \
-    --ckpt logs_navsim/2026-07-22T23-01-41_config/checkpoints/last.ckpt --num 5
+    --ckpt logs_navsim/2026-08-21T14-45-31_config/checkpoints/last.ckpt --num 5
+
 ```
 
 ## Data-format assumption

@@ -79,12 +79,13 @@ model:
     # Episode length T is free — the model predicts every frame after the context.
     context_traj: 0                 # known-trajectory context frames; predicts T - context_traj
     context_images: 2               # image-observed context frames (independent)
+    image_tokens: 9                 # tokens the spatial block extracts per observed frame
     num_diffusion_steps: 50
     num_val_samples: 20              # inference repeats per context in validation
     # raw vs encoded image input:
     #   encode_images: false -> read cached latents (data below must be latent)
     #   encode_images: true  -> read raw images, model loads the tokenizer
-    encode_images: true
+    encode_images: false
     tokenizer_exp_dir: logs_tk/tokenizer_288x512
     tokenizer_ckpt: checkpoints/last.ckpt
     tokenizer_config: config.yaml
@@ -100,24 +101,28 @@ check_val_every_n_epoch: 5
 data:
   target: data.datamodule.DataModuleFromConfig
   params:
-    batch_size: 128
+    batch_size: 100
     num_workers: 1
+    # Episodes have different lengths when num_frames=0, so they are zero-padded
+    # to the longest one in the batch; the true lengths ride along in
+    # batch["metadata"]["length"] and mask the loss.
+    collate_fn: exp_navsim.data.collate.pad_collate
 
     train:
       target: exp_navsim.data.buffer.BufferDataset
       params:
-        enable_buffer: true
-        dataset_length: 32000      # if null, use the source dataset's length
-        initial_buffer_size: 200
-        max_buffer_size: 2000
-        replace_rate: 2
+        dataset_length: 100000      # if null, use the source dataset's length
+        initial_buffer_size: 100
+        max_buffer_size: 20000
+        replace_rate: 4
         replace_count: 10
         source_dataset:
           target: exp_navsim.data.latent_dataset.NavsimLatentDataset
           params:
             cache_dir: data/navtrain_latents
             #cache_dir: data/navsim_latents  # navhard
-            num_frames: 5           # window length; navtrain scenes are longer, navhard episodes are 5 frames
+            num_frames: 0           # window length; 0 = the whole episode (padded per batch)
+            context_images: 2       # only these leading latents are read from disk; keep = model.context_images
             split: train            # see data_long.split note above
             val_fraction: 0.1
             latent_key: encoded_q_sem
@@ -128,7 +133,8 @@ data:
       params:
         cache_dir: data/navtrain_latents
         #cache_dir: data/navsim_latents  # navhard
-        num_frames: 5
+        num_frames: 0                # 0 = the whole episode (padded per batch)
+        context_images: 2            # keep = model.context_images
         split: val
         val_fraction: 0.1
         latent_key: encoded_q_sem
@@ -151,7 +157,6 @@ data:
 #     train:
 #       target: exp_navsim.data.buffer.BufferDataset
 #       params:
-#         enable_buffer: true          # buffer hides the slow image decoding/encoding
 #         initial_buffer_size: 100
 #         max_buffer_size: 1000
 #         replace_rate: 2

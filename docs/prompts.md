@@ -164,3 +164,47 @@ Check the nuReasoning website and tell
 https://huggingface.co/datasets/qixuewei/nuReasoning
 
 Suggest 3 experiments that I have not done so far (read report). Write in docs/future-plan.md.
+
+# 13.08.2026
+
+Use persistent workers so that the buffer is carried over at each epoch start.
+
+Don't load all latents from the disk, only the necessary context ones.
+Load the trajectory and other metadata fully - it's fast anyway.
+
+If num_frames=0 in config, then load the whole available trajectory from the episode.
+Write a custom collate_fn to pad the trajectories to the largest available in batch.
+Add metadata to the episodes as a dictionary with a "length" parameter.
+The model will predict the same common length for all of the samples,
+but the loss will be calculated only for the valid trajectory points,
+not the padded ones. Implement it without looping over each sample in the batch if possible.
+In test_model, use the same episode length settings from config.
+
+Change the model so that the image-aggregated part returns (B, T_img, N, D) where N is the number of output tokens from the spatial block.
+Add 1D pos embedding to the output tokens over the N dimension.
+
+! remove default values
+no running commands
+
+# 19.08.2026
+
+episode/
+├─ annotations/
+│  ├─ <idx>.pkl
+├─ cameras/
+│  ├─ CAM_M_B
+│  ├─ CAM_M_F
+│  ├─ ...
+├─ ego_state/
+
+
+This dataset is supposed to be unzipped, but I cannot afford for it to be uzipped.
+I want you to implement reading the data from compressed zip files.
+Original data in data/.
+
+Write a small lib in python to access original .zip files instead of unpacking.
+Rewrite the two notebooks for data viewing. Keep most of the code intact, mark all blocks edits that you make with
+# max-start
+# max-end
+
+Implement everything in zipview folder.

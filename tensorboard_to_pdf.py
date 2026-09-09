@@ -2,7 +2,7 @@
 """
 Export TensorBoard logs to a PDF report.
 
-python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name large-model.pdf --from 1000
+python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 1000
 
 Dependencies:
     pip install tensorboard matplotlib reportlab

@@ -11,8 +11,10 @@ Design points from docs/idea.md:
         False -> consume precomputed batch["encoded_q_sem"]; the encoder is never
                  constructed.
   * EMA velocity normalization via exp_navsim.norm.TrajectoryNorm.
-  * validation_step samples each context several times and logs val/mse and
-    val/std (STD of total turn) to TensorBoard, while printing only val loss.
+  * validation_step logs val/loss (the same flow-matching objective as
+    train/loss, so the train/val gap is directly readable) and samples each
+    context several times for val/mse and val/std (STD of total turn); only val
+    loss is printed, the rest goes to TensorBoard.
 """
 
 import math
@@ -37,6 +39,7 @@ class NavsimTrajectoryModel(pl.LightningModule):
         min_lr_multiplier,
         context_traj,
         context_images,
+        image_tokens,
         num_diffusion_steps=50,
         # validation
         num_val_samples=5,           # how many times to sample the same context
@@ -76,6 +79,7 @@ class NavsimTrajectoryModel(pl.LightningModule):
             image_encoder_channels=image_encoder_channels,
             context_traj=context_traj,
             context_images=context_images,
+            image_tokens=image_tokens,
         )
 
         # --- online (EMA) velocity normalization ----------------------------
@@ -115,6 +119,35 @@ class NavsimTrajectoryModel(pl.LightningModule):
         return q_sem.detach().clone().to(device=images.device, dtype=torch.float32)
 
     # ------------------------------------------------------------------ #
+    # Padding mask (variable-length episodes)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def frame_mask(batch, T):
+        """Which of the T frames of each padded episode are real.
+
+        exp_navsim.data.collate.pad_collate pads variable-length episodes to the
+        longest one in the batch and records the true lengths in
+        batch["metadata"]["length"]. The model still predicts all T frames for
+        every sample; this mask keeps the padded tail out of the loss/metrics.
+
+        Returns:
+            (B, T) bool tensor; all-True when the batch carries no lengths
+            (fixed-length windows).
+        """
+        length = batch.get("metadata", {}).get("length")
+        device = batch["velocity"].device
+        if length is None:
+            return torch.ones(batch["velocity"].shape[0], T, dtype=torch.bool, device=device)
+        frames = torch.arange(T, device=device)
+        return frames[None, :] < length.to(device)[:, None]
+
+    @staticmethod
+    def masked_mean(values, mask):
+        """Mean of `values` (..., T) over the frames selected by `mask` (broadcastable)."""
+        mask = mask.to(values.dtype)
+        return (values * mask).sum() / mask.expand_as(values).sum().clamp(min=1.0)
+
+    # ------------------------------------------------------------------ #
     # Flow-matching schedule
     # ------------------------------------------------------------------ #
     def alpha(self, t):
@@ -136,11 +169,16 @@ class NavsimTrajectoryModel(pl.LightningModule):
     # Training
     # ------------------------------------------------------------------ #
     def compute_loss(self, batch):
-        """Flow-matching loss over the whole trajectory (all frames at once)."""
-        deltas = self.traj_norm.normalize(batch["velocity"])       # (B, T, 2)
-        encoded_q = self.get_encoded_q(batch)                      # (B, T, C, H, W)
+        """Flow-matching loss over the whole trajectory (all frames at once).
 
-        B, T = deltas.shape[:2]
+        Padded frames of variable-length episodes are excluded from the loss (and
+        from the velocity statistics) via the mask, without any per-sample loop.
+        """
+        B, T = batch["velocity"].shape[:2]
+        mask = self.frame_mask(batch, T)                           # (B, T)
+        deltas = self.traj_norm.normalize(batch["velocity"], mask) # (B, T, 2)
+        encoded_q = self.get_encoded_q(batch)                      # (B, T_img, C, H, W)
+
         context_length = self.context_traj      # predict every frame after the context
 
         # Sample one diffusion timestep per trajectory in [0, 1).
@@ -155,7 +193,8 @@ class NavsimTrajectoryModel(pl.LightningModule):
         target = deltas - (1.0 - self.sigma_min) * noise
         target = target[:, context_length:, :]                     # only predicted frames
 
-        return ((pred_v - target) ** 2).mean()
+        # Mean over the predicted *and* valid frames only.
+        return self.masked_mean(((pred_v - target) ** 2).mean(-1), mask[:, context_length:])
 
     def training_step(self, batch, batch_idx):
         loss = self.compute_loss(batch)
@@ -170,6 +209,8 @@ class NavsimTrajectoryModel(pl.LightningModule):
         """Denoise the whole trajectory via the flow-matching ODE.
 
         Returns the reconstructed positions (B, T, 2), starting at the origin.
+        T is the padded batch length: the same number of frames is predicted for
+        every sample, and the caller drops the padded tail (frame_mask).
         """
         self.eval()
         steps = num_diffusion_steps or self.num_diffusion_steps
@@ -200,28 +241,52 @@ class NavsimTrajectoryModel(pl.LightningModule):
         return trajectory - trajectory[:, :1, :]
 
     # ------------------------------------------------------------------ #
-    # Validation
+    # Sampling-based metrics (shared by train and validation)
     # ------------------------------------------------------------------ #
-    def validation_step(self, batch, batch_idx):
-        """Sample each context num_val_samples times; log MSE and turn STD.
+    def sampled_mse(self, batch, num_samples=1):
+        """MSE between sampled trajectories and the GT of `batch`.
 
-        Only val loss (== MSE) is shown on the command line; val/mse and val/std
-        are still written to TensorBoard.
+        Sampling puts the model in eval mode (see `sample`), so the caller must
+        restore the previous mode when calling this during training.
+
+        Returns:
+            (mse, preds, mask) — preds is (num_samples, B, T, 2), mask is the
+            (B, T) padding mask; only predicted (post-context) and valid frames
+            enter the MSE.
         """
         gt = batch["trajectory"]                                   # (B, T, 2)
         ctx = self.context_traj
+        mask = self.frame_mask(batch, gt.shape[1])                 # (B, T), padding-aware
+
+        preds = torch.stack([self.sample(batch) for _ in range(num_samples)], dim=0)
+        gt_pred = gt[None, :, ctx:].expand_as(preds[:, :, ctx:])
+        mse = trajectory_mse(preds[:, :, ctx:], gt_pred, mask=mask[:, ctx:])
+        return mse, preds, mask
+
+    # ------------------------------------------------------------------ #
+    # Validation
+    # ------------------------------------------------------------------ #
+    def validation_step(self, batch, batch_idx):
+        """Log the flow-matching loss, the sampled-trajectory MSE and the turn STD.
+
+        val/loss is the same quantity as train/loss (compute_loss: one random
+        diffusion timestep, velocity-field regression), so the two curves are
+        directly comparable. val/mse and val/std need full ODE rollouts and
+        measure the sampled trajectories instead. Only val loss is shown on the
+        command line; all three go to TensorBoard.
+        """
+        # Same objective as training, on val data. The EMA velocity statistics
+        # are not updated here: normalize() only updates while self.training.
+        loss = self.compute_loss(batch)
 
         # N independent samples of the same context.
-        preds = torch.stack([self.sample(batch) for _ in range(self.num_val_samples)], dim=0)  # (N, B, T, 2)
+        mse, preds, mask = self.sampled_mse(batch, self.num_val_samples)   # preds: (N, B, T, 2)
+        std = turn_std_over_samples(preds, mask=mask)              # STD of total turn across N
 
-        gt_pred = gt[None, :, ctx:].expand_as(preds[:, :, ctx:])
-        mse = trajectory_mse(preds[:, :, ctx:], gt_pred)
-        std = turn_std_over_samples(preds)                         # STD of total turn across N
-
-        self.log("val/loss", mse, prog_bar=True, on_epoch=True, sync_dist=True)
+        self.log("val/loss", loss, prog_bar=True, on_epoch=True, sync_dist=True)
         self.log("val/mse", mse, prog_bar=False, on_epoch=True, sync_dist=True)
         self.log("val/std", std, prog_bar=False, on_epoch=True, sync_dist=True)
-        return mse
+        return loss
 
     # ------------------------------------------------------------------ #
     # Optimizer / schedule
