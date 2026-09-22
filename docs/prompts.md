@@ -208,3 +208,32 @@ Rewrite the two notebooks for data viewing. Keep most of the code intact, mark a
 # max-end
 
 Implement everything in zipview folder.
+
+# 20.09.2026 WM model #1
+
+Implement a new model architecture and config in exp_navsim/wm. The idea is:
+- run world model on the context (see readme how to do it), denoise the next latent using several steps (for performance reasons, not the )
+- everything else same as in basic model: latent aggregator, trajectory diffusion.
+- write the new architecture in more optimal way to minimise weights, and to minimise overfitting
+
+Rules:
+- Split logical blocks into functions
+- Split wm execution, the trajectory model separately
+- write minimal code, but add more comments if code is complicated or can be misunderstood. Comment about the architecture.
+- add training command on top of script
+
+
+Implement a new model architecture and config in exp_wm2. The idea is:
+- run world model on the context, extract latents of all layers. Do only one inference step.
+- change the aggregator model:
+    - it takes ONLY the world model's latents
+
+
+- everything else same as in basic model: latent aggregator, trajectory diffusion.
+- write the new architecture in more optimal way to minimise weights, and to minimise overfitting
+
+Rules:
+- Split logical blocks into functions
+- Split wm execution, the trajectory model separately
+- write minimal code, but add more comments if code is complicated or can be misunderstood. Comment about the architecture.
+- add training command on top of script

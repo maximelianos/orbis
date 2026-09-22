@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Watch NAVSIM long episodes as video, streamed from a remote Jupyter kernel.
 
-Runs on your LOCAL PC. No notebook involved: it drives a kernel on the cluster
-through the Jupyter server's websocket API and shows the frames in a Tk window.
+Runs on your LOCAL PC, importing kernel_client.py (also local). No notebook
+involved: it drives a kernel on the cluster through the Jupyter server's
+websocket API and shows the frames in a Tk window.
 
 Each frame is the front camera above the NAVSIM map BEV (lanes + agents). On the
 BEV: the whole ground-truth path, the window the model is being asked about, and
@@ -18,13 +19,15 @@ SETUP
 -----
 1. On the cluster, start a Jupyter server (in the navsim env) and note its token:
 
-       jupyter lab --no-browser --port 8888
-       jupyter server list          # -> http://localhost:8888/?token=abc123...
+        env CUDA_VISIBLE_DEVICES=0 bash
+        c navsim
+        jupyter notebook --allow-root --no-browser --NotebookApp.ip="0.0.0.0" --port 15431 --IdentityProvider.token="634df8a8caa86d5930a9ba44718f26bc1df246157a1717f0"
+        jupyter server list          # -> http://localhost:8888/?token=abc123...
 
 2. On the local PC, forward that one port (the only tunnel needed — the websocket
    API multiplexes every kernel channel over it):
 
-       ssh -N -L 8888:localhost:8888 <user>@<cluster>
+        ssh -NL 8888:127.0.0.1:15431 imbi237-h100  # LOCAL_PORT:IP:REMOTE_PORT
 
 3. On the local PC, install the dependencies and copy this directory over
    (view_episode.py, kernel_client.py and remote_episode.py must sit together —
@@ -34,11 +37,11 @@ SETUP
 
 RUN
 ---
-       python view_episode.py --token abc123
+        export JUPYTER_TOKEN="634df8a8caa86d5930a9ba44718f26bc1df246157a1717f0"
+        python view_episode.py
 
-       # with the model's predicted trajectories on the BEV
-       python view_episode.py --token abc123 \\
-           --ckpt logs_navsim/2026-08-21T14-45-31_config/checkpoints/last.ckpt
+        # with the model's predicted trajectories on the BEV
+        python view_episode.py --ckpt logs_navsim/2026-09-21T18-00-08_config/checkpoints/last.ckpt
 
    The token can also come from the JUPYTER_TOKEN environment variable.
 

@@ -65,21 +65,23 @@ cache:
 # Model
 # --------------------------------------------------------------------------- #
 model:
-  base_learning_rate: 5.0e-4 # 1.0e-3 
+  base_learning_rate: 5.0e-4 # 1.0e-3
   adjust_learning_rate: false
   precision: 16-mixed
   grad_acc_steps: 1
   target: exp_navsim.model.NavsimTrajectoryModel
   params:
     hidden_dim: 64 # 32
-    image_encoder_channels: 16      # channels of the stage-1 tokenizer latents
+    # Channels of ONE stage-1 tokenizer latent. The aggregator reads both cached
+    # latents (q_sem and q_rec concatenated), so its input is twice this.
+    image_encoder_channels: 16
     sigma_min: 1.0e-5
     warmup_steps: 0
     min_lr_multiplier: 0.1
     # Episode length T is free — the model predicts every frame after the context.
     context_traj: 0                 # known-trajectory context frames; predicts T - context_traj
     context_images: 2               # image-observed context frames (independent)
-    image_tokens: 9                 # tokens the spatial block extracts per observed frame
+    image_tokens: 1                 # tokens the spatial block extracts per observed frame
     num_diffusion_steps: 50
     num_val_samples: 20              # inference repeats per context in validation
     # raw vs encoded image input:

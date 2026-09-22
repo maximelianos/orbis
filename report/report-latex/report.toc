@@ -1,32 +1,55 @@
-\contentsline {section}{\numberline {1}Introduction}{2}{}%
-\contentsline {subsection}{\numberline {1.1}The Orbis world model}{2}{}%
-\contentsline {paragraph}{Stage 1: hybrid image tokenizer.}{2}{}%
-\contentsline {paragraph}{Stage 2: latent-space diffusion world model.}{3}{}%
-\contentsline {subsection}{\numberline {1.2}Probing the latent for future trajectories}{3}{}%
-\contentsline {section}{\numberline {2}Related Work}{4}{}%
-\contentsline {subsection}{\numberline {2.1}Diffusion and flow matching}{4}{}%
-\contentsline {paragraph}{Denoising diffusion probabilistic models.}{4}{}%
-\contentsline {paragraph}{Flow matching.}{5}{}%
-\contentsline {paragraph}{Continuous vs.\ discrete generation.}{6}{}%
-\contentsline {subsection}{\numberline {2.2}The diffusion transformer}{6}{}%
-\contentsline {subsection}{\numberline {2.3}World models}{6}{}%
-\contentsline {paragraph}{The world-model concept.}{6}{}%
-\contentsline {paragraph}{Popular video and driving world models.}{6}{}%
-\contentsline {paragraph}{Orbis.}{7}{}%
-\contentsline {paragraph}{Navigation world models.}{8}{}%
-\contentsline {section}{\numberline {3}Datasets and Benchmarks}{8}{}%
-\contentsline {subsection}{\numberline {3.1}nuPlan}{8}{}%
-\contentsline {subsection}{\numberline {3.2}The NAVSIM benchmark}{9}{}%
-\contentsline {subsection}{\numberline {3.3}PDM and Extended PDM scores}{10}{}%
-\contentsline {section}{\numberline {4}A Controlled Synthetic Study}{11}{}%
-\contentsline {subsection}{\numberline {4.1}Synthetic data generation}{11}{}%
-\contentsline {paragraph}{Velocity representation.}{11}{}%
-\contentsline {subsection}{\numberline {4.2}Velocity normalization}{12}{}%
-\contentsline {subsection}{\numberline {4.3}Denoiser architecture}{13}{}%
-\contentsline {subsection}{\numberline {4.4}Flow-matching training and sampling}{14}{}%
-\contentsline {paragraph}{Sampling.}{15}{}%
-\contentsline {subsection}{\numberline {4.5}Conditioning is disabled by design}{15}{}%
-\contentsline {subsection}{\numberline {4.6}Ablations}{15}{}%
-\contentsline {subsubsection}{\numberline {4.6.1}Model capacity}{15}{}%
-\contentsline {subsubsection}{\numberline {4.6.2}Velocity normalization}{17}{}%
-\contentsline {subsection}{\numberline {4.7}Summary}{17}{}%
+\contentsline {section}{\numberline {1}Introduction}{3}{}%
+\contentsline {subsection}{\numberline {1.1}The Orbis world model}{3}{}%
+\contentsline {paragraph}{Stage 1: hybrid image tokenizer.}{3}{}%
+\contentsline {paragraph}{Stage 2: latent-space diffusion world model.}{4}{}%
+\contentsline {subsection}{\numberline {1.2}Probing the latent for future trajectories}{4}{}%
+\contentsline {section}{\numberline {2}Related Work}{5}{}%
+\contentsline {subsection}{\numberline {2.1}Diffusion and flow matching}{5}{}%
+\contentsline {paragraph}{Denoising diffusion probabilistic models.}{5}{}%
+\contentsline {paragraph}{Flow matching.}{6}{}%
+\contentsline {paragraph}{Continuous vs.\ discrete generation.}{7}{}%
+\contentsline {subsection}{\numberline {2.2}The diffusion transformer}{7}{}%
+\contentsline {subsection}{\numberline {2.3}World models}{7}{}%
+\contentsline {paragraph}{The world-model concept.}{7}{}%
+\contentsline {paragraph}{Popular video and driving world models.}{8}{}%
+\contentsline {paragraph}{Orbis.}{9}{}%
+\contentsline {paragraph}{Navigation world models.}{9}{}%
+\contentsline {subsection}{\numberline {2.4}Trajectory planners}{9}{}%
+\contentsline {paragraph}{Rule-based and optimization planners.}{9}{}%
+\contentsline {paragraph}{Imitation learning and where it breaks.}{10}{}%
+\contentsline {paragraph}{From sensor fusion to planning-oriented networks.}{11}{}%
+\contentsline {paragraph}{Four ways of producing the trajectory.}{11}{}%
+\contentsline {paragraph}{Reinforcement learning.}{12}{}%
+\contentsline {paragraph}{VLM-based planners.}{12}{}%
+\contentsline {paragraph}{World models used for planning.}{12}{}%
+\contentsline {paragraph}{Why open-loop numbers are not enough.}{12}{}%
+\contentsline {paragraph}{Where the probe sits.}{14}{}%
+\contentsline {section}{\numberline {3}Datasets and Benchmarks}{14}{}%
+\contentsline {subsection}{\numberline {3.1}nuPlan}{14}{}%
+\contentsline {subsection}{\numberline {3.2}The NAVSIM benchmark}{15}{}%
+\contentsline {subsection}{\numberline {3.3}PDM and Extended PDM scores}{15}{}%
+\contentsline {section}{\numberline {4}A Controlled Synthetic Study}{16}{}%
+\contentsline {subsection}{\numberline {4.1}Synthetic data generation}{17}{}%
+\contentsline {paragraph}{Velocity representation.}{17}{}%
+\contentsline {subsection}{\numberline {4.2}Velocity normalization}{18}{}%
+\contentsline {subsection}{\numberline {4.3}Denoiser architecture}{19}{}%
+\contentsline {subsection}{\numberline {4.4}Flow-matching training and sampling}{20}{}%
+\contentsline {paragraph}{Sampling.}{20}{}%
+\contentsline {subsection}{\numberline {4.5}Conditioning is disabled by design}{21}{}%
+\contentsline {subsection}{\numberline {4.6}Ablations}{21}{}%
+\contentsline {subsubsection}{\numberline {4.6.1}Model capacity}{21}{}%
+\contentsline {subsubsection}{\numberline {4.6.2}Velocity normalization}{21}{}%
+\contentsline {subsection}{\numberline {4.7}Summary}{24}{}%
+\contentsline {section}{\numberline {5}The Probe on Real Driving Logs}{24}{}%
+\contentsline {subsection}{\numberline {5.1}From driving logs to episodes}{24}{}%
+\contentsline {subsection}{\numberline {5.2}Caching the frozen tokenizer latents}{26}{}%
+\contentsline {subsection}{\numberline {5.3}Whole episodes, ragged batches, and the frame mask}{26}{}%
+\contentsline {subsection}{\numberline {5.4}What changed in the image aggregator}{27}{}%
+\contentsline {paragraph}{The original design: one pooled token per frame, concatenated.}{27}{}%
+\contentsline {paragraph}{The current design: several tokens per frame, as attention keys.}{28}{}%
+\contentsline {subsection}{\numberline {5.5}The denoiser as a whole}{28}{}%
+\contentsline {subsection}{\numberline {5.6}Two independent contexts}{29}{}%
+\contentsline {subsection}{\numberline {5.7}Online velocity normalization}{30}{}%
+\contentsline {subsection}{\numberline {5.8}Training, sampling and configuration}{31}{}%
+\contentsline {subsection}{\numberline {5.9}Metrics for a distribution of futures}{32}{}%
+\contentsline {subsection}{\numberline {5.10}Status, limitations and planned experiments}{32}{}%

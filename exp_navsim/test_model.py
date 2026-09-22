@@ -25,9 +25,9 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from omegaconf import OmegaConf
 
-from util import instantiate_from_config
+from util import instantiate_from_config, get_obj_from_str
+from evaluate.checkpoint import resolve_checkpoint
 from exp_navsim.data.collate import pad_collate
-from exp_navsim.model import NavsimTrajectoryModel
 from exp_navsim.visualize_dataset import trajectory_stats
 
 # Which validation episodes are eligible for a page. Same three filters as
@@ -127,7 +127,8 @@ def _attach_bev(batch, long_ds, tokens, token_to_idx):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="exp_navsim/config.yaml")
-    ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--ckpt", required=True,
+                    help="checkpoint file, or a run/checkpoints dir to use its last.ckpt")
     ap.add_argument("--num", type=int, default=6, help="test episodes to visualize")
     ap.add_argument("--out", default="exp_navsim/navsim_predictions.pdf")
     ap.add_argument("--no-bev", action="store_true",
@@ -140,7 +141,11 @@ def main():
     # Same validation dataset the training used (deterministic windows).
     dataset = instantiate_from_config(cfg.data.params.validation)
 
-    model = NavsimTrajectoryModel.load_from_checkpoint(args.ckpt, map_location=device)
+    # The checkpoint's class is taken from the config, so this script serves
+    # both exp_navsim/config.yaml (NavsimTrajectoryModel) and
+    # exp_navsim/wm/config.yaml (WmTrajectoryModel).
+    ckpt_path = resolve_checkpoint(ckpt=args.ckpt)
+    model = get_obj_from_str(cfg.model.target).load_from_checkpoint(ckpt_path, map_location=device)
     model = model.to(device).eval()
 
     # Fixed test episodes: evenly spaced across the filtered validation set.

@@ -1,0 +1,182 @@
+# =========================================================================== #
+# Training command (repo root):
+#
+#   # ONCE: this config caches at the world model's own resolution (288x512 ->
+#   # an 18x32 latent grid), which is NOT the 256x256 cache the basic model
+#   # uses, so it needs its own pass. ~1 h; writes data/navtrain_latents_288x512.
+#   PYTHONPATH=. python -m exp_navsim.data.cache_latents --config exp_navsim/wm/config.yaml
+#
+#   PYTHONPATH=. python train_nuplan.py -c exp_navsim/wm/config.yaml \
+#       --max_steps 20000 --logdir logs_navsim_wm
+#
+#   PYTHONPATH=. python tensorboard_to_pdf.py --logdir ./logs_navsim_wm --last \
+#       --name navtrain_wm.pdf --from 1000
+#
+#   PYTHONPATH=. python -m exp_navsim.test_model --config exp_navsim/wm/config.yaml \
+#       --ckpt logs_navsim_wm/<run>/checkpoints/last.ckpt --num 5
+# =========================================================================== #
+#
+# World-model-conditioned trajectory prediction. Same pipeline and same metrics
+# as exp_navsim/config.yaml; the only difference is what conditions the
+# trajectory diffusion:
+#
+#   basic model   observed tokenizer latents            -> aggregator -> tokens
+#   this model    observed latents + ONE latent the frozen Orbis world model
+#                 imagines for the next frame           -> aggregator -> tokens
+#
+# The cache, dataloader, flow-matching schedule and validation metrics are
+# untouched, so the two runs are directly comparable curve for curve.
+#
+# Prerequisites:
+#   * `model.params.wm_exp_dir` holds BOTH checkpoints/last.ckpt AND the
+#     config.yaml the world model was trained with — the config is what supplies
+#     the backbone architecture and the latent scales, and the released
+#     checkpoint archive ships it next to the weights.
+#   * the 288x512 latent cache exists (the cache_latents command above).
+#
+# Why a separate cache: the released world model is SwinSTDiTNoExtraMLP, whose
+# every block bakes in one latent resolution — window partitioning, shifted-
+# window attention masks, relative-position tables. Unlike a plain DiT it cannot
+# be retargeted to another grid, so the latents must be 18x32 exactly. 288x512
+# is also the tokenizer's own declared resolution and the native aspect ratio of
+# the NAVSIM front camera, so this cache crops nothing, where `size: 256` cut a
+# square out of the frame.
+
+dataset: navtrain
+
+# --------------------------------------------------------------------------- #
+# Long (whole-episode) dataloader params — mirrors exp_navsim/config.yaml. Read
+# by visualize_dataset / cache_latents / test_model, not by training.
+# --------------------------------------------------------------------------- #
+data_long:
+  navhard:
+    data_root: /scratch/global/velikanm/navsim/download/navhard_two_stage
+    size: [288, 512]              # -> the world model's 18x32 latent grid
+    stored_data_frame_rate: 2
+    frame_rate: 2
+    front_camera: CAM_F0
+    load_surround: true
+    split: all
+    val_fraction: 0.1
+
+  navtrain:
+    logs_root: navsim/download/trainval_navsim_logs/trainval
+    sensor_root: navsim/download/trainval_sensor_blobs/trainval
+    index_cache: data/navtrain_episode_index.pkl
+    # [288, 512] -> an 18x32 latent grid, exactly what the released world model
+    # was built for. Must match model.params.wm_exp_dir's generator input_size
+    # times its patch_size, or WorldModelRunner refuses the batch and says so.
+    size: [288, 512]
+    stored_data_frame_rate: 2
+    frame_rate: 2
+    front_camera: CAM_F0
+    load_surround: true
+    min_frames: 5
+    split: all
+    val_fraction: 0.1
+
+# --------------------------------------------------------------------------- #
+# Latent cache (stage-1 tokenizer). NOT shared with exp_navsim/config.yaml: the
+# same tokenizer, but run at 288x512 so the grid matches the world model.
+# --------------------------------------------------------------------------- #
+cache:
+  dir:
+    navhard:  data/navsim_latents_288x512
+    navtrain: data/navtrain_latents_288x512
+  chunk: 100
+  encoder:
+    exp_dir: logs_tk/tokenizer_288x512
+    ckpt: checkpoints/last.ckpt
+    config: config.yaml
+
+# --------------------------------------------------------------------------- #
+# Model
+# --------------------------------------------------------------------------- #
+model:
+  base_learning_rate: 5.0e-4
+  adjust_learning_rate: false
+  precision: 16-mixed
+  grad_acc_steps: 1
+  target: exp_navsim.wm.model.WmTrajectoryModel
+  params:
+    # --- inherited flow-matching core (exp_navsim/model.py) ----------------
+    hidden_dim: 64
+    # Channels of the WORLD MODEL's latent space, not the tokenizer's: the
+    # factorized tokenizer gives 16 (rec) + 16 (sem) = 32. Set to 16 for a
+    # single-latent world model. Checked against the loaded backbone.
+    image_encoder_channels: 32
+    sigma_min: 1.0e-5
+    warmup_steps: 500          # the output layer starts at zero; warm up into it
+    min_lr_multiplier: 0.1
+    context_traj: 0            # predict the whole episode
+    context_images: 2          # observed frames; keep = data.*.context_images
+    # Tokens per latent frame. The conditioning path is (context_images +
+    # wm_imagined_frames) * image_tokens tokens wide, so this is the main knob
+    # between capacity and overfitting — more directly than hidden_dim.
+    image_tokens: 8
+    num_diffusion_steps: 50    # steps of the TRAJECTORY ODE (cheap, small net)
+    num_val_samples: 20
+
+    # --- frozen world model (exp_navsim/wm/wm_runner.py) -------------------
+    wm_exp_dir: logs_wm/orbis_288x512
+    wm_ckpt: checkpoints/last.ckpt
+    wm_config: config.yaml
+    # Steps of the LATENT ODE, one 700M-param backbone forward each — this is
+    # the run-time cost of the whole model. Few steps give a blurry latent, but
+    # a blurry latent still carries the ego-motion the trajectory head reads.
+    wm_steps: 4
+    wm_use_ema: true
+    wm_imagined_frames: 1      # >1 rolls the world model further, at wm_steps each
+    wm_frame_rate: null        # null = the dataset's own rate (2 Hz here)
+
+    # --- denoiser architecture (exp_navsim/wm/denoiser.py) -----------------
+    # 4 passes over 2 distinct blocks: the depth of a 4-block stack with the
+    # parameters of 2, and the weight tying regularises on its own.
+    num_layers: 4
+    num_unique_layers: 2
+    dropout: 0.1
+    cond_dropout: 0.1          # blank a sample's whole conditioning this often
+
+# --------------------------------------------------------------------------- #
+# Training data module — same as exp_navsim/config.yaml except for the batch
+# size: every step now also runs `wm_steps` forwards of a 700M-param backbone
+# over batch_size * (context_images + 1) latent frames.
+# --------------------------------------------------------------------------- #
+check_val_every_n_epoch: 5
+
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 16
+    num_workers: 1
+    collate_fn: exp_navsim.data.collate.pad_collate
+
+    train:
+      target: exp_navsim.data.buffer.BufferDataset
+      params:
+        dataset_length: 100000
+        initial_buffer_size: 100
+        max_buffer_size: 20000
+        replace_rate: 4
+        replace_count: 10
+        source_dataset:
+          target: exp_navsim.data.latent_dataset.NavsimLatentDataset
+          params:
+            cache_dir: data/navtrain_latents_288x512
+            num_frames: 0            # 0 = the whole episode (padded per batch)
+            context_images: 2        # keep = model.params.context_images
+            split: train
+            val_fraction: 0.1
+            latent_key: encoded_q_sem
+            deterministic: false
+
+    validation:
+      target: exp_navsim.data.latent_dataset.NavsimLatentDataset
+      params:
+        cache_dir: data/navtrain_latents_288x512
+        num_frames: 0
+        context_images: 2
+        split: val
+        val_fraction: 0.1
+        latent_key: encoded_q_sem
+        deterministic: true

@@ -63,6 +63,19 @@
 \lstset{style=python}
 % ------------------------------------------
 
+% ---------- float placement ----------
+% Keep every figure inside the section it belongs to, and give LaTeX
+% enough slack on a page that it stops deferring floats to the very end.
+\usepackage[section]{placeins}
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{5}
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.7}
+\renewcommand{\textfraction}{0.08}
+\renewcommand{\floatpagefraction}{0.75}
+% -------------------------------------
+
 \DeclareMathOperator*{\argmax}{arg\,max}
 \DeclareMathOperator*{\argmin}{arg\,min}
 
@@ -74,11 +87,11 @@
 
 % ---------- Modify team name, students (matriculation number), exercise number here ----------
 \newcommand{\teamname}{adl2026-team1}
-\newcommand{\students}{Velikanov Maxim}
+\newcommand{\students}{Velikanov Maksim}
 \newcommand{\assignmentnumber}{1}
 % ---------- End Modify ----------
 
-\title{Evaluating world model predictions with an attentive diffusion probe}
+\title{Leveraging world model internal representation for ego trajectory (?) prediction with an attentive diffusion probe}
 \author{\students}
 \date{\today}
 
@@ -86,16 +99,23 @@
     \maketitle
 
     \begin{abstract}
-    We study the internal representation of the Orbis driving world model by
-    attaching a lightweight attentive diffusion probe to its frozen image
-    latent and using it to predict the future 2D ego trajectory. This report
-    provides the background for that study: it describes the two-stage Orbis
-    model (a hybrid VAE tokenizer and a flow-matching latent world model) and
-    the proposed probing setup, reviews the theory of diffusion and flow
-    matching and the diffusion-transformer architecture that underlies modern
-    generative models, surveys world models for driving and navigation, and
-    details the nuPlan dataset and the NAVSIM pseudo-simulation benchmark with
-    its PDM/EPDMS scoring. The experimental results are reported separately.
+    This report studies what the internal representation of the Orbis driving
+    world model contains. We train a small attentive diffusion probe on the
+    extracted image latents and use it to predict the future 2D trajectory of the
+    vehicle. Most of the report is the background needed for that study. We
+    describe the two-stage Orbis model, a hybrid VAE tokenizer followed by a
+    flow-matching latent world model, and the probing setup built on top of it.
+    We then review diffusion and flow matching, the diffusion-transformer
+    architecture behind current generative models, world models for driving and
+    navigation, and the trajectory-planning literature that produces the same
+    kind of output as our probe. The data and metrics come from the nuPlan
+    dataset and the NAVSIM pseudo-simulation benchmark with its PDM/EPDMS
+    scoring. The last two sections report the experiments run so far: a
+    controlled synthetic study that checks the flow-matching denoiser against a
+    trajectory distribution known in closed form, and the probe as it is actually
+    implemented on real NAVSIM driving logs, including the whole-episode padded
+    training setup and the multi-token image aggregator through which the frozen
+    latent conditions the denoiser.
     \end{abstract}
 
     \tableofcontents
@@ -105,6 +125,7 @@
     \input{related-work}
     \input{dataset}
     \input{synthetic}
+    \input{navsim-probe}
 
     \begin{thebibliography}{99}
 
@@ -166,6 +187,204 @@
     \newblock Hydra-MDP++: Advancing end-to-end driving via expert-guided
     Hydra-distillation.
     \newblock \emph{arXiv preprint arXiv:2503.12820}, 2025.
+
+    % ---------- Planning literature (Section 2.4) ----------
+
+    \bibitem{e2esurvey}
+    L.~Chen, P.~Wu, K.~Chitta, B.~Jaeger, A.~Geiger, and H.~Li.
+    \newblock End-to-end autonomous driving: Challenges and frontiers.
+    \newblock \emph{IEEE TPAMI}, 46(12):10164--10183, 2024.
+
+    \bibitem{e2eplansurvey}
+    Planning-oriented end-to-end autonomous driving: Architectures, evaluation,
+    and emerging paradigms.
+    \newblock \emph{arXiv preprint arXiv:2608.20111}, 2026.
+
+    \bibitem{idm}
+    M.~Treiber, A.~Hennecke, and D.~Helbing.
+    \newblock Congested traffic states in empirical observations and microscopic
+    simulations.
+    \newblock \emph{Physical Review E}, 62(2):1805--1824, 2000.
+
+    \bibitem{pdm}
+    D.~Dauner, M.~Hallgarten, A.~Geiger, and K.~Chitta.
+    \newblock Parting with misconceptions about learning-based vehicle motion
+    planning.
+    \newblock In \emph{CoRL}, 2023.
+
+    \bibitem{alvinn}
+    D.~A. Pomerleau.
+    \newblock ALVINN: An autonomous land vehicle in a neural network.
+    \newblock In \emph{NeurIPS}, 1988.
+
+    \bibitem{pilotnet}
+    M.~Bojarski, D.~Del~Testa, D.~Dworakowski, et~al.
+    \newblock End to end learning for self-driving cars.
+    \newblock \emph{arXiv preprint arXiv:1604.07316}, 2016.
+
+    \bibitem{cil}
+    F.~Codevilla, M.~M\"{u}ller, A.~L\'{o}pez, V.~Koltun, and A.~Dosovitskiy.
+    \newblock End-to-end driving via conditional imitation learning.
+    \newblock In \emph{ICRA}, 2018.
+
+    \bibitem{chauffeurnet}
+    M.~Bansal, A.~Krizhevsky, and A.~Ogale.
+    \newblock ChauffeurNet: Learning to drive by imitating the best and
+    synthesizing the worst.
+    \newblock In \emph{RSS}, 2019.
+
+    \bibitem{causalconfusion}
+    P.~de~Haan, D.~Jayaraman, and S.~Levine.
+    \newblock Causal confusion in imitation learning.
+    \newblock In \emph{NeurIPS}, 2019.
+
+    \bibitem{lbc}
+    D.~Chen, B.~Zhou, V.~Koltun, and P.~Kr\"{a}henb\"{u}hl.
+    \newblock Learning by cheating.
+    \newblock In \emph{CoRL}, 2020.
+
+    \bibitem{urbandriver}
+    O.~Scheel, L.~Bergamini, M.~Wolczyk, B.~Osi\'{n}ski, and P.~Ondruska.
+    \newblock Urban Driver: Learning to drive from real-world demonstrations
+    using policy gradients.
+    \newblock In \emph{CoRL}, 2021.
+
+    \bibitem{transfuser}
+    K.~Chitta, A.~Prakash, B.~Jaeger, Z.~Yu, K.~Renz, and A.~Geiger.
+    \newblock TransFuser: Imitation with transformer-based sensor fusion for
+    autonomous driving.
+    \newblock \emph{IEEE TPAMI}, 45(11):12878--12895, 2023.
+
+    \bibitem{tcp}
+    P.~Wu, X.~Jia, L.~Chen, J.~Yan, H.~Li, and Y.~Qiao.
+    \newblock Trajectory-guided control prediction for end-to-end autonomous
+    driving.
+    \newblock In \emph{NeurIPS}, 2022.
+
+    \bibitem{uniad}
+    Y.~Hu, J.~Yang, L.~Chen, et~al.
+    \newblock Planning-oriented autonomous driving.
+    \newblock In \emph{CVPR}, 2023.
+
+    \bibitem{vad}
+    B.~Jiang, S.~Chen, Q.~Xu, et~al.
+    \newblock VAD: Vectorized scene representation for efficient autonomous
+    driving.
+    \newblock In \emph{ICCV}, 2023.
+
+    \bibitem{vadv2}
+    S.~Chen, B.~Jiang, H.~Gao, et~al.
+    \newblock VADv2: End-to-end vectorized autonomous driving via probabilistic
+    planning.
+    \newblock \emph{arXiv preprint arXiv:2402.13243}, 2024.
+
+    \bibitem{paradrive}
+    X.~Weng, B.~Ivanovic, Y.~Wang, Y.~Wang, and M.~Pavone.
+    \newblock PARA-Drive: Parallelized architecture for real-time autonomous
+    driving.
+    \newblock In \emph{CVPR}, 2024.
+
+    \bibitem{hydra_mdp}
+    Z.~Li, K.~Li, S.~Wang, et~al.
+    \newblock Hydra-MDP: End-to-end multimodal planning with multi-target
+    hydra-distillation.
+    \newblock \emph{arXiv preprint arXiv:2406.06978}, 2024.
+
+    \bibitem{diffusiondrive}
+    B.~Liao, S.~Chen, H.~Yin, et~al.
+    \newblock DiffusionDrive: Truncated diffusion model for end-to-end
+    autonomous driving.
+    \newblock In \emph{CVPR}, 2025.
+
+    \bibitem{diffusionplanner}
+    Y.~Zheng, R.~Liang, K.~Zheng, et~al.
+    \newblock Diffusion-based planning for autonomous driving with flexible
+    guidance.
+    \newblock In \emph{ICLR}, 2025.
+
+    \bibitem{gtrs}
+    Z.~Li, S.~Lan, et~al.
+    \newblock Generalized trajectory scoring for end-to-end multimodal planning.
+    \newblock \emph{arXiv preprint arXiv:2506.06664}, 2025.
+
+    \bibitem{drivesuprim}
+    DriveSuprim: Towards precise trajectory selection for end-to-end planning.
+    \newblock \emph{arXiv preprint arXiv:2506.06659}, 2025.
+
+    \bibitem{carl}
+    B.~Jaeger, D.~Dauner, J.~Beau{\ss}wein, S.~Gerstenecker, K.~Chitta, and
+    A.~Geiger.
+    \newblock CaRL: Learning scalable planning policies with simple rewards.
+    \newblock In \emph{CoRL}, 2025.
+
+    \bibitem{think2drive}
+    Q.~Li, X.~Jia, S.~Wang, and J.~Yan.
+    \newblock Think2Drive: Efficient reinforcement learning by thinking with
+    latent world model for autonomous driving.
+    \newblock In \emph{ECCV}, 2024.
+
+    \bibitem{emma}
+    J.-J. Hwang, R.~Xu, H.~Lin, et~al.
+    \newblock EMMA: End-to-end multimodal model for autonomous driving.
+    \newblock \emph{arXiv preprint arXiv:2410.23262}, 2024.
+
+    \bibitem{drivevlm}
+    X.~Tian, J.~Gu, B.~Li, et~al.
+    \newblock DriveVLM: The convergence of autonomous driving and large
+    vision-language models.
+    \newblock In \emph{CoRL}, 2024.
+
+    \bibitem{senna}
+    B.~Jiang, S.~Chen, B.~Liao, et~al.
+    \newblock Senna: Bridging large vision-language models and end-to-end
+    autonomous driving.
+    \newblock \emph{arXiv preprint arXiv:2410.22313}, 2024.
+
+    \bibitem{drivewm}
+    Y.~Wang, J.~He, L.~Fan, H.~Li, Y.~Chen, and Z.~Zhang.
+    \newblock Driving into the future: Multiview visual forecasting and planning
+    with world model for autonomous driving.
+    \newblock In \emph{CVPR}, 2024.
+
+    \bibitem{wote}
+    Y.~Li, L.~Chen, et~al.
+    \newblock End-to-end driving with online trajectory evaluation via BEV world
+    model.
+    \newblock In \emph{ICCV}, 2025.
+
+    \bibitem{law}
+    Y.~Li, L.~Fan, J.~He, et~al.
+    \newblock Enhancing end-to-end autonomous driving with latent world model.
+    \newblock In \emph{ICLR}, 2025.
+
+    \bibitem{world4drive}
+    Y.~Zheng, et~al.
+    \newblock World4Drive: End-to-end autonomous driving via intention-aware
+    physical latent world model.
+    \newblock In \emph{ICCV}, 2025.
+
+    \bibitem{ppgeo}
+    P.~Wu, L.~Chen, H.~Li, X.~Jia, J.~Yan, and Y.~Qiao.
+    \newblock Policy pre-training for autonomous driving via self-supervised
+    geometric modeling.
+    \newblock In \emph{ICLR}, 2023.
+
+    \bibitem{vidar}
+    Z.~Yang, L.~Chen, Y.~Sun, and H.~Li.
+    \newblock Visual point cloud forecasting enables scalable autonomous driving.
+    \newblock In \emph{CVPR}, 2024.
+
+    \bibitem{admlp}
+    J.-T. Zhai, Z.~Feng, J.~Du, et~al.
+    \newblock Rethinking the open-loop evaluation of end-to-end autonomous
+    driving in nuScenes.
+    \newblock \emph{arXiv preprint arXiv:2305.10430}, 2023.
+
+    \bibitem{egostatus}
+    Z.~Li, Z.~Yu, S.~Lan, et~al.
+    \newblock Is ego status all you need for open-loop end-to-end autonomous
+    driving?
+    \newblock In \emph{CVPR}, 2024.
 
     \end{thebibliography}
 

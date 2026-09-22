@@ -1,0 +1,37 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\begin{document}
+\begin{tikzpicture}[
+    font=\small,
+    dnode/.append style={text width=34mm},
+    tok/.style={rounded corners=2pt, draw=blue!60!black, fill=attention,
+                minimum size=6mm, inner sep=0pt},
+]
+
+\node[latentn] (grid) {latent grid\\$(C,H,W)$, frame $i$};
+\node[learn, below=9mm of grid] (sp) {SpatialBlock\\$M=N$ queries};
+\draw[arrow] (grid) -- (sp);
+
+% ---- N tokens per observed frame ----
+\node[tok, below=9mm of sp] (k3) {};
+\node[tok, left=3mm of k3]  (k2) {};
+\node[tok, left=3mm of k2]  (k1) {};
+\node[tok, right=3mm of k3] (k4) {};
+\node[tok, right=3mm of k4] (k5) {};
+\draw[arrow] (sp) -- (k3);
+
+\node[fit=(k1)(k5), inner sep=0pt, draw=none] (TOKS) {};
+\node[note, right=4mm of k5, anchor=west] {$N$ tokens\\$+$ slot position emb.};
+
+\node[seqn, below=13mm of TOKS, text width=46mm] (seq)
+    {key / value sequence\\$[\,\mathrm{image}\;\|\;\mathrm{context}\;\|\;\mathrm{pred}\,]$};
+\draw[arrow] (k1.south) -- (seq.north west);
+\draw[arrow] (k5.south) -- (seq.north east);
+
+\node[note, text=greenDark, below=6mm of seq]
+    {cross-attention: each predicted frame\\picks the image tokens it needs};
+\draw[arrow, greenDark] (seq.south) -- ++(0,-5mm);
+
+\end{tikzpicture}
+\end{document}

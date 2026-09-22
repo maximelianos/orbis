@@ -10,8 +10,33 @@ Two quantities (see docs/idea.md):
 import torch
 
 
+def masked_episode_mean(values, mask):
+    """Mean over the frames of each episode, then over the episodes.
+
+    Args:
+        values: (..., T) per-frame quantity.
+        mask:   (..., T) frame-validity mask, broadcastable against `values`.
+    Returns:
+        scalar tensor.
+
+    Pooling every frame into one average instead would weight an episode by its
+    length. NAVSIM scenes run from 5 to ~40 frames, so the long ones would count
+    up to eight times as much as the short ones. Averaging within an episode
+    first gives every episode one vote, in the loss and in the metrics alike.
+    """
+    mask = mask.to(values.dtype).expand_as(values)
+    frames = mask.sum(dim=-1)                                    # (...)
+    per_episode = (values * mask).sum(dim=-1) / frames.clamp(min=1.0)
+    # An episode with no valid frame (all padding) must not pull the mean.
+    counts = (frames > 0).to(values.dtype)
+    return (per_episode * counts).sum() / counts.sum().clamp(min=1.0)
+
+
 def trajectory_mse(pred, gt, mask=None):
     """Mean squared error. pred/gt: (..., T, 2).
+
+    Averaged per episode before being averaged across episodes, so the value is
+    comparable with the training loss and does not favour long episodes.
 
     Args:
         mask: optional (..., T) frame-validity mask (broadcastable against the
@@ -20,9 +45,9 @@ def trajectory_mse(pred, gt, mask=None):
     """
     sq = ((pred - gt) ** 2).mean(-1)                             # (..., T)
     if mask is None:
+        # Equal lengths: the per-episode mean and the pooled mean coincide.
         return sq.mean()
-    mask = mask.to(sq.dtype)
-    return (sq * mask).sum() / mask.expand_as(sq).sum().clamp(min=1.0)
+    return masked_episode_mean(sq, mask)
 
 
 def total_turn(trajectory, mask=None, eps=1e-6):

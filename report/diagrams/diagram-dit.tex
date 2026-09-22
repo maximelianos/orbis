@@ -1,0 +1,73 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\pgfdeclarelayer{panelbg}
+\pgfsetlayers{panelbg,background,main}
+
+\begin{document}
+\begin{tikzpicture}[
+    dnode/.append style={text width=32mm},
+    sum/.style={circle, draw=grayDark, fill=white, inner sep=0pt,
+                minimum size=6mm, font=\small},
+]
+
+% ============ the trunk, read top to bottom ============
+\node[io] (tin) {input tokens\\\scriptsize patchified latent};
+\node[proc, below=8mm of tin]  (ln1)  {Layer Norm};
+\node[attn, below=8mm of ln1]  (mha)  {Multi-head\\self-attention};
+\node[sum,  below=8mm of mha]  (add1) {$+$};
+\node[proc, below=8mm of add1] (ln2)  {Layer Norm};
+\node[head, below=8mm of ln2]  (ff)   {Feed-forward (MLP)};
+\node[sum,  below=8mm of ff]   (add2) {$+$};
+\node[io,   below=8mm of add2] (tout) {output tokens};
+
+\foreach \a/\b in {tin/ln1, ln1/mha, mha/add1, add1/ln2, ln2/ff, ff/add2, add2/tout}
+    {\draw[arrow] (\a) -- (\b);}
+
+% ============ residual bypasses, two lanes on the left ============
+\coordinate (resA) at ($(tin.west)+(-13mm,0)$);
+\coordinate (resB) at ($(tin.west)+(-6mm,0)$);
+
+\draw[arrow] (tin.west) -- (resA |- tin) -- (resA |- add1) -- (add1.west)
+    node[tag, pos=0.5, anchor=east, xshift=-1mm] {residual};
+
+% the second bypass taps the trunk BELOW the first sum, so the two
+% bypasses never share a horizontal run into the same node
+\coordinate (tap2) at ($(add1.south)!0.5!(ln2.north)$);
+\node[junction] at (tap2) {};
+\draw[arrow] (tap2) -- (resB |- tap2) -- (resB |- add2) -- (add2.west);
+
+% ============ conditioning column, anchored off the trunk ============
+% placed with right=..of so the gap is real, rather than measured to a
+% node centre and eaten by the node's own half-width
+\node[cond, right=20mm of ln1] (cin)
+    {conditioning\\$t$ (diffusion step)\\$c$ (context / action)};
+\node[cond, below=9mm of cin] (cmlp) {MLP};
+\draw[arrow] (cin) -- (cmlp);
+\node[note, below=5mm of cmlp, text width=36mm] (czero)
+    {adaLN-Zero: regress $(\gamma,\beta)$ per\\norm and $\alpha$ per residual};
+
+% every modulation tap leaves the same vertical rail, so they line up
+\coordinate (rail) at ($(cin.west)+(-9mm,0)$);
+\draw[plainline, purpleDark!70] (rail |- ln1) -- (rail |- add2);
+\draw[arrow, purpleDark!70] (cmlp.west) -- (rail |- cmlp);
+
+\foreach \n/\lbl in {ln1/{$\gamma_1,\beta_1$}, add1/{$\alpha_1$},
+                     ln2/{$\gamma_2,\beta_2$}, add2/{$\alpha_2$}}
+    {\draw[arrow, dashed, purpleDark!70] (rail |- \n) -- (\n.east)
+        node[tag, pos=0.4, above, text=purpleDark] {\lbl};}
+
+% ============ panel and title ============
+\node[fit=(tin)(tout)(resA |- tin)(cin)(czero), inner sep=0pt, draw=none] (ALL) {};
+\coordinate (frameTop) at ($(ALL.north)+(0,0.95)$);
+\coordinate (frameBot) at ($(ALL.south)+(0,-0.35)$);
+
+\begin{pgfonlayer}{panelbg}
+\node[panelA, fit=(ALL)(ALL.north |- frameTop)(ALL.south |- frameBot),
+      inner xsep=7mm, inner ysep=0pt] (P) {};
+\end{pgfonlayer}
+\node[anchor=north west, font=\bfseries, text=blueDark]
+    at ($(P.north west)+(0.7,-0.35)$) {DiT block, stacked $N$ times};
+
+\end{tikzpicture}
+\end{document}

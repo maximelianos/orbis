@@ -1,0 +1,60 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\pgfdeclarelayer{panelbg}
+\pgfsetlayers{panelbg,background,main}
+
+\begin{document}
+\begin{tikzpicture}[
+    cell/.style={draw=grayDark!70, minimum size=7mm, inner sep=0pt, font=\scriptsize},
+    img/.style  ={cell, draw=blue!60!black,  fill=attention},
+    valid/.style={cell, draw=greenDark,      fill=detail},
+    pad/.style  ={cell, draw=grayDark!45, dashed, fill=neutral},
+    hdr/.style  ={draw=none, font=\scriptsize, text=grayDark},
+    rowlbl/.style={draw=none, font=\scriptsize, anchor=east},
+    mval/.style ={draw=none, font=\scriptsize, text=grayDark},
+]
+
+% the whole grid is a matrix, so every cell is placed relative to its
+% neighbours and the columns line up by construction
+\matrix (M) [matrix of nodes,
+             ampersand replacement=\&,
+             nodes={cell},
+             column sep=1.4mm, row sep=1.4mm,
+             row 1/.style={nodes={hdr}},
+             row 5/.style={nodes={mval}},
+             row 6/.style={nodes={mval}},
+             row 7/.style={nodes={mval}},
+             column 1/.style={nodes={rowlbl}}]
+{
+  frame \& 0 \& 1 \& 2 \& 3 \& 4 \& 5 \& 6 \& 7 \\
+  {episode 1, $\ell_1=8$} \& |[img]| {} \& |[img]| {} \& |[valid]| {} \& |[valid]| {}
+      \& |[valid]| {} \& |[valid]| {} \& |[valid]| {} \& |[valid]| {} \\
+  {episode 2, $\ell_2=5$} \& |[img]| {} \& |[img]| {} \& |[valid]| {} \& |[valid]| {}
+      \& |[valid]| {} \& |[pad]| {} \& |[pad]| {} \& |[pad]| {} \\
+  {episode 3, $\ell_3=3$} \& |[img]| {} \& |[img]| {} \& |[valid]| {} \& |[pad]| {}
+      \& |[pad]| {} \& |[pad]| {} \& |[pad]| {} \& |[pad]| {} \\
+  {mask $m_{1,t}$} \& 1 \& 1 \& 1 \& 1 \& 1 \& 1 \& 1 \& 1 \\
+  {mask $m_{2,t}$} \& 1 \& 1 \& 1 \& 1 \& 1 \& 0 \& 0 \& 0 \\
+  {mask $m_{3,t}$} \& 1 \& 1 \& 1 \& 0 \& 0 \& 0 \& 0 \& 0 \\
+};
+
+% ============ brace over the image context ============
+\coordinate (braceL) at ($(M-2-2.north west)+(0,3mm)$);
+\coordinate (braceR) at ($(M-2-3.north east)+(0,3mm)$);
+\draw[decorate, decoration={brace, amplitude=4pt}, grayDark, line width=.7pt]
+    (braceL) -- (braceR)
+    node[note, pos=0.5, above=2.5mm] {\texttt{context\_images} $=2$};
+
+% ============ legend ============
+\node[chip, draw=blue!60!black, fill=attention, below=9mm of M.south west] (lg1) {};
+\node[chiptext, right=2mm of lg1] (lg1t) {image latent $+$ trajectory};
+\legendchip{greenDark}{detail}{lg2}{lg1t}{trajectory only}
+\legendchip{grayDark!45}{neutral}{lg3}{lg2t}{zero padding, masked out of loss and metrics}
+
+\begin{pgfonlayer}{panelbg}
+\node[legendbox, fit=(lg1)(lg3t), inner xsep=6mm, inner ysep=3.5mm] {};
+\end{pgfonlayer}
+
+\end{tikzpicture}
+\end{document}

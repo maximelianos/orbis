@@ -67,8 +67,13 @@ class PositionEmbedding2d(nn.Module):
         """
         current_shape = (height, width)
         
-        # Create new embeddings if shape changed or not yet created
-        if self.pos_embed_2d is None or self._pos_embed_2d_shape != current_shape:
+        # Create new embeddings if shape changed or not yet created. The cache is
+        # what keeps this off the per-forward path: the table is generated once
+        # per (H, W) — through numpy, on the CPU — and reused afterwards. It used
+        # to write `pos_embed` while testing `pos_embed_2d`, so it never hit.
+        if (self.pos_embed_2d is None
+                or self._pos_embed_2d_shape != current_shape
+                or self.pos_embed_2d.device != torch.device(device)):
             # Generate 2D sincos positional embeddings
             pos_embed = get_2d_sincos_pos_embed(
                 embed_dim=self.embed_dim,
@@ -77,9 +82,9 @@ class PositionEmbedding2d(nn.Module):
                 extra_tokens=0
             )
             pos_embed = torch.from_numpy(pos_embed).float()  # (H*W, embed_dim)
-            
+
             # Update buffer
-            self.pos_embed = pos_embed.to(device)
-            self._pos_embed_shape = current_shape
-        
-        return self.pos_embed
+            self.pos_embed_2d = pos_embed.to(device)
+            self._pos_embed_2d_shape = current_shape
+
+        return self.pos_embed_2d

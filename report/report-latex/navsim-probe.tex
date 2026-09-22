@@ -1,0 +1,587 @@
+\section{The Probe on Real Driving Logs}
+\label{sec:navsim-probe}
+
+The synthetic study in Section~\ref{sec:synthetic} answered a narrow question,
+namely whether a flow-matching temporal transformer can denoise a whole
+trajectory at once and reproduce a target distribution, under conditions where
+nothing else could go wrong: analytic data, zeroed conditioning, and every
+episode the same length. This section describes what the system looks like once
+those three simplifications are removed and the same generative core is attached
+to the frozen Orbis latent on real NAVSIM driving logs. This is the part the
+earlier sections put off, and it is where most of the engineering actually sits.
+
+Three properties of real logs drive most of what follows. The conditioning is no
+longer a scalar but a \emph{spatial grid of tokenizer latents}, one grid per
+observed frame, and it has to be reduced to something a trajectory transformer
+can take in without swamping the two-channel velocity signal. Episodes have
+\emph{different lengths}, since a NAVSIM scene is only as long as the run of
+frames whose camera images happen to be on disk, so batches are ragged. And the
+behaviour we care about, turning or branching at an intersection, is rare, so the
+pipeline has to keep whole episodes instead of short fixed windows, and the
+evaluation has to be able to pick out the episodes where a distribution over
+futures means anything at all. Figure~\ref{fig:navsim-pipeline} shows the
+pipeline end to end.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth,height=0.38\textheight,keepaspectratio]{../diagrams/diagram-navsim-pipeline.pdf}
+\caption{The NAVSIM probing pipeline. Everything above the dashed arrow runs
+once: the driving logs are scanned into an episode index, each episode is decoded
+into front-camera frames at $2$\,Hz, and the frozen stage-1 tokenizer turns those
+frames into per-frame latents written to one HDF5 file per episode. Everything
+below is the training loop. A window dataset reads a whole episode's trajectory
+but only the leading image latents, a ring buffer hides the HDF5 read latency, a
+padding collate assembles ragged episodes into a rectangular batch with explicit
+lengths, and the flow-matching probe is trained and evaluated on that batch with
+the padded frames masked out.}
+\label{fig:navsim-pipeline}
+\end{figure}
+
+\subsection{From driving logs to episodes}
+\label{sec:navsim-episodes}
+
+Two source datasets sit behind a single configuration switch. They differ only in
+how an \emph{episode} is enumerated; the per-frame dictionary is the same in
+both, so all the geometry code is shared. The \textbf{navhard} split
+(\texttt{navhard\_two\_stage}) gives one episode per meta pickle, taken as its
+longest scene, which is around five frames. That is enough for a sanity check and
+far too short for a trajectory distribution. The \textbf{navtrain} split (the
+\texttt{trainval} logs plus the \texttt{trainval} sensor blobs) is the one the
+experiments use: each log pickle spans many scenes of roughly forty frames at
+$2$\,Hz, and one episode is one scene.
+
+The complication with navtrain is that the sensor download is usually
+\emph{partial}. The log pickles list every frame, but only some of the
+corresponding front-camera JPEGs are actually on disk. Instead of dropping whole
+scenes or quietly returning black images, we define an episode as the
+\emph{longest contiguous run of frames within a scene whose front-camera image is
+present}. This keeps the temporal spacing uniform, which matters because a
+velocity is a finite difference and a hole in the frame sequence would silently
+double one step. The cost is that some episodes get shorter. Scenes with fewer
+than \texttt{min\_frames}$\,=5$ usable frames are thrown away. The scan touches
+the whole sensor tree, so the resulting (log, scene) $\to$ present-frames mapping
+is cached to \texttt{data/navtrain\_episode\_index.pkl} and only rebuilt when
+that file is deleted, for instance after downloading more blobs. The cache used
+for the runs here holds $9\,577$ episodes.
+
+Each frame contributes a global ego pose: the translation $(x,y)$ from
+\texttt{ego2global\_translation}, and a yaw recovered from the
+\texttt{ego2global\_rotation} quaternion $[w,x,y,z]$ as
+\begin{equation}
+\psi = \operatorname{atan2}\!\big(2(wz+xy),\; 1-2(y^2+z^2)\big).
+\label{eq:yaw}
+\end{equation}
+The whole episode is then expressed in the local frame of its \emph{first} frame,
+by subtracting the initial position and rotating by $-\psi_0$,
+\begin{equation}
+p_t \;=\; R(-\psi_0)\,\big(g_t - g_0\big),
+\qquad
+R(-\psi_0)=\begin{pmatrix}\cos\psi_0 & \sin\psi_0\\ -\sin\psi_0 & \cos\psi_0\end{pmatrix},
+\label{eq:local-frame}
+\end{equation}
+so every trajectory starts at the origin heading along $+x$. The synthetic
+B\'ezier curves satisfied the same convention by construction, which is why the
+same normalization and the same plotting code can be reused unchanged.
+
+The model again works in velocity space, with one representational difference
+that is easy to misread when comparing the two code paths, so it is worth being
+explicit. The synthetic data used a \emph{forward} difference with the last entry
+zero-padded, while the NAVSIM loader uses a \emph{backward} difference with the
+first entry zeroed,
+\begin{equation}
+v_0 = 0,\qquad v_t = p_t - p_{t-1}\ \ (t\ge 1).
+\label{eq:navsim-velocity}
+\end{equation}
+The advantage is that the inverse is an unshifted cumulative sum,
+$\sum_{i\le t} v_i = p_t - p_0$, so integrating the sampled velocities and
+re-anchoring at the first frame recovers the positions exactly with no
+off-by-one correction. It also means the first predicted entry is structurally
+zero, so the model spends one output slot on a constant. That is harmless, but it
+is worth remembering when reading per-frame error curves.
+
+The train/validation split is a deterministic function of the scene token rather
+than of the file order. A token is hashed with MD5, reduced modulo $1000$, and
+assigned to validation if the bucket comes out below
+$1000\cdot\texttt{val\_fraction}$, with $\texttt{val\_fraction}=0.1$. Since the
+hash depends only on the token, the split survives re-caching, re-indexing and
+any change in the number of downloaded blobs, and the qualitative figures use the
+same episodes as the logged validation metrics.
+
+\subsection{Caching the frozen tokenizer latents}
+\label{sec:navsim-cache}
+
+Encoding images with the stage-1 tokenizer inside the training loop is possible.
+A configuration flag (\texttt{encode\_images}) selects it, and the tokenizer is
+then constructed lazily on the correct device while the batch carries raw images.
+But it is wasteful, because the encoder is frozen and its output for a given
+frame never changes. The default path encodes every episode once, in chunks of
+$100$ frames, and writes one HDF5 file per episode holding both tokenizer
+streams, \texttt{encoded\_q\_rec} and \texttt{encoded\_q\_sem}, each of shape
+$(T, C, H_{\text{lat}}, W_{\text{lat}})$, along with the trajectory, the
+velocity, the frame rate and the scene token. With the $\times16$ spatial
+compression from Section~\ref{sec:orbis} and the $256\times256$ centre crop the
+loader uses, the latent grid is $16\times16$ positions with $C=16$ channels.
+
+The probe consumes the \emph{semantic} stream \texttt{encoded\_q\_sem}. The
+semantic encoder is the one regularized towards DINOv2 features, so it is the
+stream that should carry scene structure such as lanes, vehicles and free space,
+whereas the detail stream is pushed towards the low-level appearance needed for
+faithful reconstruction. We cache the reconstruction stream anyway, since it
+costs almost nothing extra, so the choice can be ablated later without
+re-encoding the dataset.
+
+\subsection{Whole episodes, ragged batches, and the frame mask}
+\label{sec:navsim-padding}
+
+The first version of the training loop cut a fixed window of
+\texttt{num\_frames} frames out of each episode. That made every batch
+rectangular and every tensor shape static, and it also threw away most of the
+data. With episodes of about forty frames and a window of eight, the model never
+saw a trajectory long enough to contain a complete manoeuvre, and the longest and
+most interesting episodes were truncated just like the shortest ones. Setting
+\texttt{num\_frames}$\,=0$ switches the dataset to serving \emph{whole}
+episodes, at which point the batch becomes ragged.
+
+Ragged batches are handled at the collate level, not inside the model. A custom
+collate function pads every time-major tensor of the sample dictionary with zeros
+up to the longest episode in the batch, using \texttt{pad\_sequence} so that
+trailing dimensions are left alone, and records the true lengths in
+\texttt{batch["metadata"]["length"]}. Padding is applied per key independently.
+That matters because two different time axes live in one sample: the trajectory
+and velocity have length $T$, while the image latents have length
+$T_{\text{img}}\le\texttt{context\_images}$, and a very short episode can end up
+with fewer image frames than the nominal image context.
+
+The model turns the recorded lengths into a boolean frame mask
+$m\in\{0,1\}^{B\times T}$ with $m_{b,t}=1$ iff $t<\ell_b$. The mask is used for
+\emph{selection} and not for truncation, which is the part that is easy to get
+wrong: the network still predicts all $T_{\max}$ frames of every sample, and the
+mask is what removes the padded tail from the loss, from the online velocity
+statistics and from every validation metric. Writing the flow-matching residual
+for episode $b$ and frame $t$ as $r_{b,t}=\hat u_{b,t}-u_{b,t}\in\mathbb{R}^2$,
+the objective is a masked mean over the frames that are both predicted (past the
+trajectory context $c$) and valid,
+\begin{equation}
+\mathcal{L}
+= \frac{\displaystyle\sum_{b}\sum_{t\ge c} m_{b,t}\,\tfrac{1}{2}\lVert r_{b,t}\rVert_2^2}
+       {\displaystyle\sum_{b}\sum_{t\ge c} m_{b,t}},
+\label{eq:masked-loss}
+\end{equation}
+This is implemented without a per-sample loop, so variable lengths cost one
+elementwise multiply. Figure~\ref{fig:navsim-mask} shows the layout of a padded
+batch.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.86\textwidth,height=0.34\textheight,keepaspectratio]{../diagrams/diagram-navsim-mask.pdf}
+\caption{A padded batch of three episodes. Every episode is stored at the full
+padded length $T_{\max}=8$ and the network predicts all $T_{\max}$ velocity steps
+for all three. The recorded lengths $\ell_b$ become the frame mask $m_{b,t}$,
+which removes the padded tail from the loss of
+Equation~\eqref{eq:masked-loss}, from the exponential-moving-average velocity
+statistics and from the validation metrics. Only the leading
+\texttt{context\_images} frames, here two, carry an image latent, and those are
+the only latents read from disk.}
+\label{fig:navsim-mask}
+\end{figure}
+
+Reading whole episodes would multiply the amount of latent data pulled off disk
+if it were not for the second half of the change. The dataset slices the HDF5
+arrays so that \emph{only} the leading \texttt{context\_images} latents are read,
+while the trajectory, which is two floats per frame, is always read in full. The
+denoiser never looks at an image beyond the context, so nothing is lost, and the
+I/O per sample becomes essentially independent of episode length. What latency is
+left gets absorbed by an in-memory ring buffer, which serves repeated samples and
+pulls \texttt{replace\_count}$\,=10$ fresh episodes from the source dataset every
+$40$ served samples, growing to at most $20\,000$ cached episodes. The buffer
+trades a controlled amount of sample staleness for a GPU that is never starved by
+HDF5 decompression.
+
+\subsection{What changed in the image aggregator}
+\label{sec:navsim-aggregator}
+
+The conditioning path has been revised more than anything else, and that revision
+is the main architectural difference between the model described in
+Section~\ref{sec:probe} and the one we actually train.
+
+\paragraph{The original design: one pooled token per frame, concatenated.}
+In the first version the aggregator reduced each frame's latent grid to a
+\emph{single} token. The $16$ tokenizer channels were lifted to the model width
+$D$ by a linear map, the $H_{\text{lat}}\!\times\!W_{\text{lat}}$ positions were
+flattened into a sequence with a 2D sinusoidal position embedding, and one
+cross-attention query pooled that sequence into a single $D$-dimensional vector,
+with the frame embedding entering as the AdaLN conditioning of the pooling block.
+The result was a tensor of shape $(B,T,D)$, one image vector per frame, whose
+entries beyond the image context were explicitly zeroed. That vector was then
+\emph{concatenated to the per-point feature} of every trajectory point, so the
+input to the pointwise MLP had width $2+3D$: two velocity channels, the
+diffusion-time embedding, the frame embedding and the frame's image token.
+
+Three problems with this only show up on real data. The capacity bottleneck is
+severe, since an entire street scene is squeezed into $D=64$ numbers before the
+trajectory model sees any of it, so the probe has no way to ask different
+questions of different parts of the image. The alignment is rigid: because the
+image token is concatenated per frame, image information reaches trajectory point
+$t$ only if frame $t$ carried an image, which forces the awkward zeroing of all
+non-context frames and burns an input slot on a constant zero vector for most of
+the episode. And the interface is brittle, because the width of the first linear
+layer depends on how image evidence is supplied, so changing the number of
+observed frames changes the parameter shapes.
+
+\paragraph{The current design: several tokens per frame, as attention keys.}
+The aggregator now emits $N=\texttt{image\_tokens}$ tokens per observed frame
+instead of one. The same cross-attention block is used with $N$ queries rather
+than one, giving $(B,T_{\text{img}},N,D)$, and a 1D sinusoidal position embedding
+over the $N$ slots is added so the slots stay distinguishable once they are
+flattened together with the frames. Only the leading
+$T_{\text{img}}=\texttt{context\_images}$ frames get aggregated at all, so the
+zeroing of later frames goes away; later frames are simply never encoded. The
+resulting tokens are flattened into one sequence of length
+$T_{\text{img}}\!\cdot\!N$.
+
+The important part is that these tokens no longer enter the per-point features.
+They are prepended to the key/value sequence of every temporal block, so the
+per-point input shrinks to width $2+2D$ and the image evidence reaches the
+trajectory through \emph{cross-attention} rather than concatenation. Each
+predicted frame can now attend to whichever image tokens it needs, the number of
+observed frames and the number of tokens per frame can both change without
+touching a parameter shape, and the conditioning bandwidth is set by
+$T_{\text{img}}\cdot N$ instead of by the model width. In the configuration used
+here, $\texttt{context\_images}=2$ and $\texttt{image\_tokens}=9$ give $18$ image
+tokens per episode. Figure~\ref{fig:navsim-aggregator} contrasts the two
+designs.
+
+There is one asymmetry in the current implementation that should be recorded.
+Slot identity enters the image tokens \emph{additively}, through the 1D position
+embedding over the $N$ slots, while frame identity enters only
+\emph{multiplicatively}, through the AdaLN modulation of the pooling block by the
+frame embedding. With $T_{\text{img}}=2$ the two observed frames are distinguished
+by a modulation of the pooling rather than by an explicit temporal tag on the
+tokens themselves. Adding a frame embedding to the tokens would make the temporal
+ordering of the image context explicit, and that is the obvious next refinement
+if the image context is ever made longer. One more detail, since
+Section~\ref{sec:probe} describes the probe in the abstract: the pooling queries
+are \emph{fixed} sinusoidal position embeddings, not learned parameters. What is
+learned is the projection of those queries, the key/value projections of the
+latent grid, the AdaLN modulation and the feed-forward branch. The query tokens
+themselves are deterministic slot identifiers.
+
+\begin{figure}[htbp]
+\centering
+\begin{subfigure}[t]{0.47\textwidth}
+\centering
+\includegraphics[width=\linewidth,height=0.32\textheight,keepaspectratio]{../diagrams/diagram-aggregator-old.pdf}
+\caption{Before: a single pooled token per frame, concatenated to every
+trajectory point.}
+\label{fig:navsim-aggregator-old}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.47\textwidth}
+\centering
+\includegraphics[width=\linewidth,height=0.32\textheight,keepaspectratio]{../diagrams/diagram-aggregator-new.pdf}
+\caption{After: $N$ tokens per observed frame, entering the attention stack as
+keys and values.}
+\label{fig:navsim-aggregator-new}
+\end{subfigure}
+\caption{The revision of the image aggregator. Pooling the latent grid into one
+vector per frame (left) pushed the whole scene through a $D$-dimensional
+bottleneck, tied image evidence to the frame index by concatenation, and required
+non-context frames to be zeroed. Emitting $N$ tokens per observed frame and
+routing them through cross-attention (right) widens the conditioning bandwidth to
+$T_{\text{img}}\cdot N$ tokens, lets every predicted frame query the image context
+freely, removes the zero-padding of non-context frames, and makes the per-point
+input width independent of how much image evidence is supplied.}
+\label{fig:navsim-aggregator}
+\end{figure}
+
+\subsection{The denoiser as a whole}
+\label{sec:navsim-denoiser}
+
+With the aggregator settled, the rest of the denoiser is a small
+sequence-to-sequence transformer whose only trainable inputs are the noisy
+velocities and two scalar embeddings. Given the noisy velocity trajectory
+$\hat v\in\mathbb{R}^{B\times T\times2}$ at diffusion time $t$, the network forms
+a diffusion-time embedding $e_{\text{time}}\in\mathbb{R}^{B\times D}$ broadcast
+across frames, and a frame embedding $e_{\text{frame}}\in\mathbb{R}^{T\times D}$
+computed from the \emph{normalized} index $\operatorname{arange}(T)/T$ so that it
+is well defined for any episode length. Each point is then described by
+\begin{equation}
+x_i=\big[\underbrace{\hat v_i}_{2},\;\underbrace{e_{\text{time}}}_{D},\;
+\underbrace{e_{\text{frame},i}}_{D}\big]\in\mathbb{R}^{2+2D},
+\label{eq:navsim-input}
+\end{equation}
+and split at the trajectory-context boundary: the first
+$c=\texttt{context\_traj}$ points go through a \emph{context} MLP and the
+remaining $T-c$ through a \emph{prediction} MLP. There are two MLPs rather than
+one because the two groups do different jobs. The context tokens are known and
+never updated; the prediction tokens are the query stream the stack refines.
+
+Each temporal block is a DiT-style cross-attention block with AdaLN-Zero
+conditioning on $e_{\text{time}}$, as in Section~\ref{sec:syn-model}, but here it
+is used in a genuinely \emph{cross}-attentive configuration. The query is the
+current prediction stream, and the key/value sequence is the concatenation of the
+image tokens, the trajectory-context tokens and the prediction tokens,
+\begin{equation}
+\text{pred}\;\leftarrow\;
+\text{TemporalBlock}\big(\underbrace{[\,\text{img}\;\|\;\text{ctx}\;\|\;\text{pred}\,]}_{\text{keys/values}},\;
+\underbrace{\text{pred}}_{\text{queries}},\; e_{\text{time}}\big),
+\label{eq:navsim-block}
+\end{equation}
+repeated for every block in the stack. The key sequence is rebuilt from the
+updated predictions at each layer, so the image and context tokens stay static
+while the prediction stream is refined. That is closer to a decoder stack with a
+fixed memory than to plain self-attention. A LayerNorm and a linear map project
+the final prediction stream back to two channels, which gives the velocity field
+on the predicted frames only, of shape $(B,T-c,2)$.
+Figure~\ref{fig:navsim-denoiser} shows the assembled network.
+
+The configuration used here sets $D=64$ with $8$ attention heads and a
+feed-forward width of $2D$, and the stack currently holds two temporal blocks
+(reduced from four when the image tokens were added, which lengthened the key
+sequence and therefore the cost of each block). With
+$\texttt{context\_traj}=0$, $\texttt{context\_images}=2$ and
+$\texttt{image\_tokens}=9$, a block attends over $18+T$ keys and produces $T$
+queries.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth,height=0.42\textheight,keepaspectratio]{../diagrams/diagram-navsim-denoiser.pdf}
+\caption{The trajectory denoiser on real data. The image branch (top) turns the
+cached tokenizer latents of the $T_{\text{img}}$ observed frames into
+$T_{\text{img}}\cdot N$ tokens. The trajectory branch (bottom left) encodes each
+point from the noisy velocity, the diffusion-time embedding and the frame
+embedding, splitting at the trajectory-context boundary. Every temporal block
+takes the concatenated image, context and prediction tokens as keys and values
+and the prediction stream as queries, conditioned on the diffusion time through
+AdaLN-Zero, and the refreshed prediction stream re-enters the key sequence at the
+next layer. A LayerNorm and a linear head emit the flow-matching velocity field
+on the predicted frames only.}
+\label{fig:navsim-denoiser}
+\end{figure}
+
+\subsection{Two independent contexts}
+\label{sec:navsim-contexts}
+
+The model carries \emph{two} unrelated notions of context, and they are easy to
+conflate even though the code keeps them separate. The \emph{trajectory context}
+$\texttt{context\_traj}=c$ is the number of leading frames whose ground-truth
+velocities are handed to the model and therefore not predicted. Those frames are
+copied into the noisy trajectory before the network runs, held fixed during ODE
+integration, and left out of the loss. The \emph{image context}
+$\texttt{context\_images}=T_{\text{img}}$ is the number of leading frames that
+carry an image latent. The two are set independently and the episode length $T$
+is free, so everything after the trajectory context gets predicted no matter how
+long the episode is.
+
+The runs reported here use $c=0$ and $T_{\text{img}}=2$. This is the strictest
+setting for a probe, and the most informative one: the model gets two
+front-camera observations and \emph{no} ground-truth motion at all, and has to
+produce the whole trajectory from the frozen latent. It also keeps the question
+from Section~\ref{sec:probe} free of trajectory extrapolation. With $c>0$ a
+constant-velocity continuation of the given prefix would already score well, so
+$c=0$ is what isolates the image representation. The context branch is still kept
+alive in the architecture, because the planned experiments include training with
+the context trajectory supplied half the time. With $c=0$ the context MLP just
+receives an empty slice and contributes no tokens.
+
+One implementation detail looks like information leakage on a first reading and
+is not: the sampler passes the ground-truth velocities to the denoiser at
+inference time. They are only used to fill the first $c$ entries of the
+trajectory, so with $c=0$ they are never read. The interface is written this way
+so that one call site serves both settings.
+
+\subsection{Online velocity normalization}
+\label{sec:navsim-norm}
+
+Section~\ref{sec:syn-norm} showed why per-channel velocity standardization
+matters: an isotropic diffusion prior does not match two channels of very
+different scale, and the mismatch turns into endpoint drift after the cumulative
+sum. On real logs the argument is if anything stronger, since the longitudinal
+velocity of a car at $2$\,Hz is on the order of metres per frame while the
+lateral component is near zero on straights. But the one-shot computation used in
+the synthetic study is inconvenient here, because the statistics would have to be
+recomputed every time the dataset, the split or the frame rate changed.
+
+The production path therefore keeps the same transform and estimates its
+parameters online. A small module maintains an exponential moving average of the
+per-channel mean and variance with decay $0.999$, seeded directly by the first
+batch it sees,
+\begin{equation}
+\mu \leftarrow \gamma\,\mu + (1-\gamma)\,\mu_{\text{batch}},
+\qquad
+\sigma^2 \leftarrow \gamma\,\sigma^2 + (1-\gamma)\,\sigma^2_{\text{batch}},
+\qquad \gamma = 0.999,
+\label{eq:ema}
+\end{equation}
+and applies the familiar pair
+$\hat v=(v-\mu)/(\sigma+\varepsilon)$ and $v=\hat v(\sigma+\varepsilon)+\mu$.
+Three details make this work here. The batch statistics are computed over the
+\emph{valid} frames only, using the same mask as the loss. Without that, the
+zero-padded tail of every short episode would drag the mean and the variance
+towards zero, and the more ragged the batch the worse the distortion. The
+statistics are stored as non-trainable parameters, so they are part of the
+checkpoint and a reloaded model denormalizes the same way the trained one did.
+That is easy to get wrong when the statistics live in the dataset instead. And
+the update only happens while the module is in training mode, so validation and
+sampling read the statistics without disturbing them.
+
+\subsection{Training, sampling and configuration}
+\label{sec:navsim-training}
+
+The objective is the same as in Section~\ref{sec:syn-flow}: a linear
+flow-matching schedule with $\alpha(t)=1-t$ and
+$\sigma(t)=\sigma_{\min}+t(1-\sigma_{\min})$, one diffusion time drawn uniformly
+per episode, and a mean-squared regression onto the velocity field
+$u=x-(1-\sigma_{\min})\varepsilon$. Two things differ. The average is the masked
+one of Equation~\eqref{eq:masked-loss}, and only the frames past the trajectory
+context contribute.
+
+Sampling mirrors the synthetic procedure with the context handling added. The
+trajectory is initialized from pure noise, the first $c$ entries are overwritten
+by the known context velocities, and the ODE is integrated backwards from $t=1$
+to $t=0$ with $50$ uniform Euler steps, updating only the predicted suffix at
+each step. The integrated velocities are denormalized with the EMA statistics and
+turned into positions by a cumulative sum re-anchored at the first frame. By
+Equation~\eqref{eq:navsim-velocity} that places the predicted path at the origin
+in the ego frame of the first observed frame, which is the same frame the cached
+trajectory and the map BEV live in, so predictions, ground truth and map overlay
+with no further transform.
+
+The validation step logs three quantities of different character on purpose.
+\texttt{val/loss} is the \emph{same} masked flow-matching objective as
+\texttt{train/loss} evaluated on held-out episodes, so the two curves can be read
+against each other and the generalization gap is visible at a glance. It costs
+one forward pass. \texttt{val/mse} and \texttt{val/std} need full ODE rollouts
+instead, so they measure the sampled trajectories rather than the regression
+target. Table~\ref{tab:navsim-config} lists the configuration.
+
+\begin{table}[htbp]
+\centering
+\caption{Configuration of the NAVSIM probe. The values are those of
+\texttt{exp\_navsim/config.yaml} for the runs discussed here. The episode length
+$T$ is not a hyperparameter; it is a property of each batch.}
+\label{tab:navsim-config}
+\begin{tblr}{
+  colspec={llX[l]},
+  row{1}={font=\bfseries},
+}
+\toprule
+Parameter & Value & Role \\
+\midrule
+source dataset        & navtrain     & full NAVSIM training logs, $\sim\!40$-frame scenes \\
+frame rate            & $2$\,Hz      & stored rate; no subsampling \\
+episodes (cached)     & $9\,577$     & longest on-disk contiguous run per scene \\
+image size            & $256\times256$ & resize $+$ centre crop of \texttt{CAM\_F0} \\
+latent stream         & \texttt{encoded\_q\_sem} & DINOv2-regularized semantic latents \\
+latent channels $C$   & $16$         & tokenizer output width \\
+\midrule
+$\texttt{context\_traj}$   & $0$     & no ground-truth motion given; all frames predicted \\
+$\texttt{context\_images}$ & $2$     & observed frames carrying a latent \\
+$\texttt{image\_tokens}$   & $9$     & tokens the spatial block emits per observed frame \\
+hidden width $D$      & $64$         & embeddings, attention and feed-forward width \\
+temporal blocks       & $2$          & cross-attention denoiser stack \\
+attention heads       & $8$          & per block, dropout $0.1$ \\
+\midrule
+$\sigma_{\min}$       & $10^{-5}$    & flow-matching schedule floor \\
+diffusion steps       & $50$         & Euler steps at sampling time \\
+EMA decay             & $0.999$      & online velocity statistics \\
+batch size            & $100$        & episodes per step, zero-padded to $T_{\max}$ \\
+base LR               & $5\cdot10^{-4}$ & AdamW, weight decay $0.01$, cosine decay to $0.1\times$ \\
+warmup                & $0$ steps    & \\
+precision             & 16-mixed     & \\
+validation samples    & $20$         & rollouts per context, for \texttt{val/std} \\
+validation interval   & every $5$ epochs & \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+\subsection{Metrics for a distribution of futures}
+\label{sec:navsim-metrics}
+
+A probe that is asked for a \emph{distribution} cannot be judged by pointwise
+error alone, because the two failure modes we care about sit at opposite ends of
+the same axis. A model that collapses onto the mean of the data will look
+respectable under a squared error and be useless as a world-model read-out. A
+model that samples wildly will cover every future and be just as useless. So we
+log two quantities.
+
+The first is the masked trajectory MSE, averaged over the predicted and valid
+frames of all sampled rollouts, which says how close the samples sit to the one
+future that actually happened. The second measures spread. The \emph{total turn}
+of a trajectory is the accumulated change of heading along it: with segments
+$s_t=p_{t+1}-p_t$ and headings $\theta_t=\operatorname{atan2}(s_{t,y},s_{t,x})$,
+\begin{equation}
+\Theta \;=\; \sum_{t} \operatorname{wrap}\!\big(\theta_{t+1}-\theta_t\big),
+\qquad
+\operatorname{wrap}(\delta)=\operatorname{atan2}(\sin\delta,\cos\delta),
+\label{eq:total-turn}
+\end{equation}
+The wrapping keeps the increments in $[-\pi,\pi]$, so a heading crossing the
+$\pm\pi$ branch cut does not register as a full turn. A turn increment at index
+$t$ is built from two consecutive segments and therefore from three consecutive
+frames, so an increment is only counted when the third of those frames is valid.
+The padded tail contributes nothing, which is what keeps the metric comparable
+across episodes of different length. Sampling the same context $N=20$ times,
+taking the standard deviation of $\Theta$ across those samples, and averaging
+over the batch,
+\begin{equation}
+\texttt{val/std} \;=\; \frac{1}{B}\sum_{b} \operatorname{std}_{n\le N}\ \Theta_{b}^{(n)},
+\label{eq:turn-std}
+\end{equation}
+gives an interpretable read-out of how much the probe disagrees with itself about
+where the car is going. The pair has to be read together. A low MSE with a
+near-zero turn spread is the signature of mode collapse onto the average path,
+while a growing spread that does not hurt the MSE is evidence of real
+multi-modality.
+
+The qualitative counterpart is a per-episode PDF, produced by a separate
+evaluation script from the same deterministic validation split. Each page shows
+the first and last context front views, the NAVSIM map bird's-eye view with the
+\emph{whole} sampled distribution drawn on it, and the trajectory panels. The
+model predicts the full padded length for every sample, so the page trims each
+episode back to its true length before plotting. Episodes are pre-filtered by
+driven distance ($\ge 5$\,m) and by the angle between the initial heading and the
+start-to-end vector ($\ge 10^\circ$). A stationary or perfectly straight episode
+makes any trajectory distribution look correct, so the filter is there to pick
+out the cases where the question is not trivial.
+
+\subsection{Status, limitations and planned experiments}
+\label{sec:navsim-status}
+
+The pipeline above is the state the system currently runs in: whole-length
+episodes, padded batches with a masked objective, the multi-token image
+aggregator feeding a cross-attention denoiser, online velocity normalization, and
+a validation protocol reporting both accuracy and spread. Going from fixed short
+windows to full episodes, together with the aggregator revision, is what moved
+the qualitative predictions from unconvincing to clearly structured.
+
+Several limitations are known and should be stated plainly. The attention stack
+does not yet get a key-padding mask, so padded trajectory tokens are visible as
+keys even though the loss excludes them. Those tokens are zero-valued and the
+effect looks small, but it is a real inconsistency between the loss and the
+attention, and it is the next thing to fix. The image context is short
+($T_{\text{img}}=2$) and its frame identity enters only through AdaLN modulation,
+as discussed in Section~\ref{sec:navsim-aggregator}. The probe is evaluated with
+MSE and turn spread rather than with the displacement-based metrics the driving
+literature uses, and there is still no control baseline, meaning a
+constant-velocity extrapolation or a probe trained on a shuffled latent, to
+establish how much of the performance comes from the representation rather than
+from the strong prior structure of driving trajectories. Finally, and this
+matters most for the claim the project set out to test, everything reported here
+conditions on \emph{stage-1 tokenizer} latents. The stage-2 world model of
+Section~\ref{sec:orbis} has not been probed at all.
+
+That last gap is what the planned continuation is about, and it has three parts.
+The first is a layer-wise probe of the world model: freeze the STDiT stack, tap
+its intermediate block activations, and train the same probe on each tap in turn
+to find where ego-motion information is strongest as a function of depth. A flat
+depth curve and a peaked one would both tell us something. The second is a
+capacity and control sweep that fixes the best tap and varies probe size against
+baselines, so that a good score can be credited to the representation rather than
+to the read-out. The third goes at calibration directly: sample
+$k\in\{1,5,10,20\}$ futures per context on strata separating free-flow driving
+from branching intersections, and report $\text{minADE}_k$ and mode recall on map
+branches next to a sharpness measure on straights, so a model cannot score well
+just by sampling everything. That third experiment needs longer and denser source
+clips, since a five-second NAVSIM scene rarely contains a real branch point, and
+the data ingest for that is the one piece of infrastructure still missing.

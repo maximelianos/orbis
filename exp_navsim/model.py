@@ -24,7 +24,7 @@ import pytorch_lightning as pl
 
 from exp_navsim.denoiser import TrajectoryDenoiser
 from exp_navsim.norm import TrajectoryNorm
-from exp_navsim.metrics import trajectory_mse, turn_std_over_samples
+from exp_navsim.metrics import trajectory_mse, turn_std_over_samples, masked_episode_mean
 
 
 class NavsimTrajectoryModel(pl.LightningModule):
@@ -102,21 +102,28 @@ class NavsimTrajectoryModel(pl.LightningModule):
         return self._encoder
 
     def get_encoded_q(self, batch):
-        """Return semantic latents (B, T, C, H, W).
+        """Return the image latents (B, T, 2*C, H, W).
+
+        Both cached tokenizer latents are handed to the denoiser, concatenated
+        over the channel axis as [q_sem, q_rec]: the semantic latent carries what
+        the scene means, the reconstruction latent where things are, and the
+        trajectory head wants both. The aggregator is built for 2*C channels
+        accordingly (exp_navsim/denoiser.py).
 
         In raw mode, encode batch["images"] with the frozen tokenizer; in encoded
-        mode, use the precomputed batch["encoded_q_sem"].
+        mode, use the precomputed batch["encoded_q_sem"] / ["encoded_q_rec"].
         """
         if not self.encode_images:
-            return batch["encoded_q_sem"]
+            return torch.cat([batch["encoded_q_sem"], batch["encoded_q_rec"]], dim=2)
 
         images = batch["images"]                              # (B, T, C, H, W)
         B, T = images.shape[:2]
         flat = images.reshape(B * T, *images.shape[2:]).to(self.encoder.device)
-        _, q_sem = self.encoder.encode(flat)
-        q_sem = q_sem.reshape(B, T, *q_sem.shape[1:])
+        q_rec, q_sem = self.encoder.encode(flat)
+        encoded = torch.cat([q_sem, q_rec], dim=1)            # (B*T, 2*C, H, W)
+        encoded = encoded.reshape(B, T, *encoded.shape[1:])
         # clone() to leave inference-mode; detached because the tokenizer is frozen.
-        return q_sem.detach().clone().to(device=images.device, dtype=torch.float32)
+        return encoded.detach().clone().to(device=images.device, dtype=torch.float32)
 
     # ------------------------------------------------------------------ #
     # Padding mask (variable-length episodes)
@@ -141,11 +148,32 @@ class NavsimTrajectoryModel(pl.LightningModule):
         frames = torch.arange(T, device=device)
         return frames[None, :] < length.to(device)[:, None]
 
+    @classmethod
+    def scored_mask(cls, batch, T):
+        """Frames that may enter a loss or a metric: real, and not frame 0.
+
+        Velocity is a finite difference, so v_0 is defined as 0 for every episode
+        (exp_navsim/data/navsim_base.py). Scoring it rewards predicting a
+        constant, and feeding it to the EMA normalizer drags the velocity mean
+        towards zero; the same holds for the trajectory metrics, where frame 0 is
+        the origin of both the prediction and the ground truth by construction.
+        So frame 0 is dropped here — it stays in the *input*, where it is a real
+        observed frame the model should attend to.
+        """
+        mask = cls.frame_mask(batch, T).clone()
+        mask[:, 0] = False
+        return mask
+
     @staticmethod
-    def masked_mean(values, mask):
-        """Mean of `values` (..., T) over the frames selected by `mask` (broadcastable)."""
-        mask = mask.to(values.dtype)
-        return (values * mask).sum() / mask.expand_as(values).sum().clamp(min=1.0)
+    def episode_mean(values, mask):
+        """Per-frame mean inside each episode, then the mean over episodes.
+
+        `values` is (B, T) and `mask` (B, T) selects the frames that count. The
+        pooling itself lives in exp_navsim.metrics so that the loss and val/mse
+        weight an episode the same way; see `masked_episode_mean` for why the
+        length must not decide how much an episode counts.
+        """
+        return masked_episode_mean(values, mask)
 
     # ------------------------------------------------------------------ #
     # Flow-matching schedule
@@ -173,28 +201,47 @@ class NavsimTrajectoryModel(pl.LightningModule):
 
         Padded frames of variable-length episodes are excluded from the loss (and
         from the velocity statistics) via the mask, without any per-sample loop.
+        The surviving frames are averaged inside each episode before the episodes
+        are averaged together (`episode_mean`), so a 40-frame scene does not
+        outvote a 5-frame one. The diffusion timestep is drawn logit-normally
+        rather than uniformly; see the comment at the draw.
         """
         B, T = batch["velocity"].shape[:2]
-        mask = self.frame_mask(batch, T)                           # (B, T)
-        deltas = self.traj_norm.normalize(batch["velocity"], mask) # (B, T, 2)
+        # Two different masks: `frame_mask` says which frames exist (the attention
+        # may not read the others), `scored_mask` which frames count towards the
+        # loss and the statistics (the same, minus the constant frame 0).
+        frame_mask = self.frame_mask(batch, T)                     # (B, T)
+        scored = self.scored_mask(batch, T)                        # (B, T)
+        deltas = self.traj_norm.normalize(batch["velocity"], scored)  # (B, T, 2)
         encoded_q = self.get_encoded_q(batch)                      # (B, T_img, C, H, W)
 
         context_length = self.context_traj      # predict every frame after the context
 
-        # Sample one diffusion timestep per trajectory in [0, 1).
-        t = torch.rand(B, device=deltas.device)
+        # One diffusion timestep per trajectory, drawn logit-normally: sample
+        # u ~ N(0, 1) and push it through the sigmoid, so t = sigmoid(u) lands in
+        # (0, 1) with a density that peaks at t = 0.5 and thins out towards both
+        # ends. Uniform sampling spends the same effort everywhere, but the ends
+        # are the easy part of the schedule: near t = 0 the input is almost the
+        # clean trajectory and near t = 1 it is almost pure noise, and in both
+        # cases the velocity field is close to something the model gets right
+        # early. The hard, ambiguous middle is where the trajectory's shape is
+        # actually decided, and that is where this puts the samples. No extra
+        # loss weighting is needed, the sampling density *is* the weighting.
+        # This is the schedule from the SD3 paper (Esser et al., 2024).
+        t = torch.sigmoid(torch.randn(B, device=deltas.device))
 
         # Noise the whole trajectory and predict the velocity field.
         noisy_deltas, noise = self.add_noise(deltas, t)
-        pred_v = self.denoiser(encoded_q, deltas, noisy_deltas, t)  # (B, T - context_traj, 2)
+        pred_v = self.denoiser(encoded_q, deltas, noisy_deltas, t,
+                               frame_mask=frame_mask)              # (B, T - context_traj, 2)
 
         # Flow-matching target: v = A(t) * deltas + B(t) * noise, with A = 1,
         # B = -(1 - sigma_min).
         target = deltas - (1.0 - self.sigma_min) * noise
         target = target[:, context_length:, :]                     # only predicted frames
 
-        # Mean over the predicted *and* valid frames only.
-        return self.masked_mean(((pred_v - target) ** 2).mean(-1), mask[:, context_length:])
+        # Mean over the predicted *and* scored frames only, one vote per episode.
+        return self.episode_mean(((pred_v - target) ** 2).mean(-1), scored[:, context_length:])
 
     def training_step(self, batch, batch_idx):
         loss = self.compute_loss(batch)
@@ -221,6 +268,7 @@ class NavsimTrajectoryModel(pl.LightningModule):
         B, T = deltas.shape[:2]
         device = deltas.device
         context_length = self.context_traj      # predict every frame after the context
+        frame_mask = self.frame_mask(batch, T)  # padded frames stay out of the attention
 
         # Start from pure noise, but keep the (known) context deltas fixed.
         sampled = torch.randn(B, T, 2, device=device)
@@ -230,7 +278,7 @@ class NavsimTrajectoryModel(pl.LightningModule):
         t_steps = torch.linspace(1, 0, steps + 1, device=device)
         for i in range(steps):
             t = t_steps[i].repeat(B)
-            pred_v = self.denoiser(encoded_q, deltas, sampled, t)
+            pred_v = self.denoiser(encoded_q, deltas, sampled, t, frame_mask=frame_mask)
             dt = t_steps[i] - t_steps[i + 1]
             sampled[:, context_length:] = sampled[:, context_length:] + pred_v * dt
 
@@ -251,12 +299,12 @@ class NavsimTrajectoryModel(pl.LightningModule):
 
         Returns:
             (mse, preds, mask) — preds is (num_samples, B, T, 2), mask is the
-            (B, T) padding mask; only predicted (post-context) and valid frames
-            enter the MSE.
+            (B, T) scored mask; only predicted (post-context) frames that are
+            real and not frame 0 enter the MSE (see `scored_mask`).
         """
         gt = batch["trajectory"]                                   # (B, T, 2)
         ctx = self.context_traj
-        mask = self.frame_mask(batch, gt.shape[1])                 # (B, T), padding-aware
+        mask = self.scored_mask(batch, gt.shape[1])                # (B, T), padding-aware
 
         preds = torch.stack([self.sample(batch) for _ in range(num_samples)], dim=0)
         gt_pred = gt[None, :, ctx:].expand_as(preds[:, :, ctx:])

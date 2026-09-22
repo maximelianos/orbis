@@ -1,0 +1,48 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\pgfdeclarelayer{panelbg}
+\pgfsetlayers{panelbg,background,main}
+
+\begin{document}
+\begin{tikzpicture}[dnode/.append style={text width=26mm}]
+
+% ============ row 1: generation ============
+\node[io] (turn) {turn\\$\sim\mathcal{U}[0,1]$};
+\node[proc, right=11mm of turn]  (endp) {endpoint\\$(r\cos\alpha,\,r\sin\alpha)$};
+\node[proc, right=11mm of endp]  (bez)  {cubic B\'ezier\\$B(s)$, $T=20$};
+\node[latentn, right=11mm of bez] (pos) {positions\\$p_t\in\mathbb{R}^{T\times2}$};
+\node[latentn, right=11mm of pos] (vel) {velocities\\$v_t=p_t-p_{t-1}$};
+
+\foreach \a/\b in {turn/endp, endp/bez, bez/pos, pos/vel} {\draw[arrow] (\a) -- (\b);}
+
+\node[note, above=3mm of endp] {$\alpha = 30^\circ - 60^\circ\,\mathrm{turn}$};
+\node[note, above=3mm of bez]  {straight-stem control points};
+\node[note, above=3mm of vel]  {first entry zero-padded};
+
+% ============ row 2: representation, running back to the left ============
+\node[learn, below=13mm of vel] (norm) {standardize\\$\hat v=(v-\mu)/\sigma$};
+\node[head, left=11mm of norm]  (model) {diffusion model\\input};
+\node[io,   left=11mm of model] (back)  {positions back by\\cumulative sum};
+
+\draw[arrow] (vel) -- (norm);
+\draw[arrow] (norm) -- (model);
+\draw[arrow, dashed] (model) -- (back)
+    node[tag, midway, below] {at sampling time};
+
+\node[note, below=3mm of norm] (normlbl) {per channel, cached over the dataset};
+
+% ============ panels ============
+\node[fit=(turn)(vel), inner sep=0pt, draw=none] (rowGen) {};
+\node[fit=(back)(norm)(normlbl), inner sep=0pt, draw=none] (rowRep) {};
+
+\begin{pgfonlayer}{panelbg}
+\node[panelA, fit=(rowGen), inner xsep=7mm, inner ysep=10mm] (P1) {};
+\node[panelB, fit=(rowRep), inner xsep=7mm, inner ysep=9mm] (P2) {};
+\end{pgfonlayer}
+
+\panelbadge{blueDark}{badgeA}{1}{P1}{Generate the curve}
+\panelbadge{greenDark}{badgeB}{2}{P2}{Represent it for the model}
+
+\end{tikzpicture}
+\end{document}

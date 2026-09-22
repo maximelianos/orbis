@@ -72,12 +72,17 @@ dataset. To switch:
 | `latent_dataset.py`| `NavsimLatentDataset` (cached latents) and `NavsimRawWindowDataset` (raw images); fixed `num_frames` windows |
 | `buffer.py`        | ring-buffer dataset copied from `brain_matching` |
 | `denoiser.py`      | `TrajectoryDenoiser` transformer — network only, no flow-matching |
+| `embeddings.py`    | sin-cos embeddings shared by both denoisers: diffusion time (spread over [0, 1000)) and a tabulated absolute frame index |
 | `model.py`         | `NavsimTrajectoryModel` — flow matching, EMA norm, raw/encoded flag, val metrics |
 | `norm.py`          | `TrajectoryNorm` — EMA velocity normalization |
 | `metrics.py`       | trajectory MSE and STD of total turn |
 | `test_decode.py`   | decode cached latents → PDF (BEV + decoded images + trajectory) |
 | `test_model.py`    | run a checkpoint on fixed test episodes → PDF of predicted trajectories |
 | `config.yaml`      | single config, subkeys `dataset` (switch) / `data_long` / `cache` / `model` / `data` |
+| `wm/wm_runner.py`  | `WorldModelRunner` — the frozen stage-2 world model, run in latent space only |
+| `wm/denoiser.py`   | `WmTrajectoryDenoiser` — compact trajectory denoiser over world-model latents |
+| `wm/model.py`      | `WmTrajectoryModel` — subclasses `NavsimTrajectoryModel`, swaps the conditioning |
+| `wm/config.yaml`   | config for the world-model variant (training command on top of the file) |
 
 ## Raw vs encoded (config flag)
 
@@ -89,6 +94,31 @@ dataset. To switch:
   `data:` → something else and `data_raw:` → `data:`. Batches then carry `images`
   (via `NavsimRawWindowDataset`) instead of `encoded_q_sem`; no latent cache is
   needed.
+
+## What the denoiser sees
+
+Both cached latents condition the trajectory head. `get_encoded_q` concatenates
+them over the channel axis as `[q_sem, q_rec]`, so the aggregator's input is
+`2 * model.params.image_encoder_channels`: the semantic latent says what the
+scene means, the reconstruction latent where things are.
+
+Episodes have different lengths, so batches are zero-padded to the longest one
+(`data/collate.py`). Two separate masks follow from that, and they are not the
+same mask:
+
+- `frame_mask` marks the frames that exist. It becomes the attention
+  `key_padding_mask`, so a real frame never reads a padded one. Without it the
+  padded tail leaks into the prediction, and differently in every batch.
+- `scored_mask` marks the frames that count towards a loss or a metric: the real
+  frames minus frame 0. Velocity is a finite difference, so `v_0` is 0 for every
+  episode; scoring it rewards predicting a constant, and feeding it to the EMA
+  normalizer pulls the velocity mean towards zero. Frame 0 stays in the input,
+  where it is a real observed frame.
+
+Frame positions are embedded by their absolute index, never by `arange(T) / T`.
+With padding, `T` is the longest episode in the batch, so the normalized version
+gave a frame a different embedding depending on which episodes happened to sit
+beside it.
 
 ## Validation / metrics
 
@@ -106,6 +136,63 @@ episode frame 0, which is exactly the frame `batch["trajectory"]` lives in for t
 deterministic (start=0) validation windows — so no transform is needed. It needs
 `NUPLAN_MAPS_ROOT` / `NUPLAN_MAP_VERSION`; pass `--no-bev` to drop the panel.
 
+## World-model conditioning (`wm/`)
+
+A second model, in `wm/`, keeps the whole pipeline above and changes only what
+conditions the trajectory diffusion:
+
+```
+basic model   observed tokenizer latents                     -> aggregator -> tokens
+wm model      observed latents + the latent the frozen Orbis world model
+              imagines for the NEXT frame                    -> aggregator -> tokens
+```
+
+Same cache, same dataloader, same flow-matching schedule and the same
+`val/loss` / `val/mse` / `val/std`, so the two runs are comparable curve for
+curve. `WmTrajectoryModel` subclasses `NavsimTrajectoryModel` and overrides one
+method (`get_encoded_q`); `exp_navsim/model.py` is untouched.
+
+**World-model execution** (`wm/wm_runner.py`) is deliberately separate from the
+trainable model. It builds *only* the STDiT backbone out of the stage-2
+checkpoint — never the ~3 GB tokenizer inside it, because cached latents go in
+and a latent comes out — and it is a plain object rather than an `nn.Module`, so
+its ~700 M frozen parameters never join the trajectory model's parameters or
+state dict. The next latent comes from `wm_steps` Euler steps of the same
+flow-matching ODE the world model was trained with; the step count is low on
+purpose (a conditioning signal, not a picture). The rollout is memoized per
+batch, so validation's 20 samples pay for it once.
+
+**The denoiser** (`wm/denoiser.py`) is written for few weights and little
+overfitting: one aggregator shared by every latent frame (frames differ only by
+a learned slot vector), one MLP for context and predicted trajectory frames
+separated by a two-row role embedding, and `num_layers` passes over
+`num_unique_layers` tied cross-attention blocks — depth without the parameters.
+Regularisation is dropout in every block, `cond_dropout` blanking a sample's
+entire conditioning during training, a zero-initialised output layer, and no
+parameter that scales with the episode length.
+
+Requires `model.params.wm_exp_dir` to hold **both** `checkpoints/last.ckpt` and
+the `config.yaml` the world model was trained with (the config supplies the
+backbone architecture and the latent scales).
+
+**It needs its own latent cache.** The released world model is
+`SwinSTDiTNoExtraMLP`, and every Swin block bakes in one latent resolution — the
+window partitioning, the shifted-window attention masks and the
+relative-position tables. Unlike a plain DiT it cannot be retargeted to another
+grid, so the latents must be exactly 18×32, i.e. cached from 288×512 images
+rather than the basic model's 256×256. `wm/config.yaml` is already set up for
+that; run its caching pass once:
+
+```bash
+python -m exp_navsim.data.cache_latents --config exp_navsim/wm/config.yaml
+```
+
+288×512 is also the tokenizer's own declared resolution and the native aspect
+ratio of the NAVSIM front camera, so this cache crops nothing, where `size: 256`
+cut a square out of the frame. Feeding a mismatched grid raises a
+`ValueError` naming the expected size instead of failing deep inside a Swin
+block.
+
 ## Commands
 
 ```bash
@@ -117,9 +204,18 @@ python -m exp_navsim.data.bev_extract  --config exp_navsim/config.yaml --num 3  
 python -m exp_navsim.draw_bev          --config exp_navsim/config.yaml --num 3   # BEV drawing smoke check -> PDF
 python train_nuplan.py -c exp_navsim/config.yaml --max_steps 20000 --logdir logs_navsim
 python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 1000
+python -m exp_navsim.test_model --config exp_navsim/config.yaml --ckpt logs_navsim/2026-08-21T14-45-31_config --num 6
+
 python -m exp_navsim.test_model --config exp_navsim/config.yaml \
     --ckpt logs_navsim/2026-08-21T14-45-31_config/checkpoints/last.ckpt --num 5
 
+# --- world-model-conditioned variant (exp_navsim/wm/) ---
+# ONCE: its own cache at the world model's 288x512 / 18x32 resolution.
+python -m exp_navsim.data.cache_latents --config exp_navsim/wm/config.yaml
+python train_nuplan.py -c exp_navsim/wm/config.yaml --max_steps 20000 --logdir logs_navsim_wm
+python tensorboard_to_pdf.py --logdir ./logs_navsim_wm --last --name navtrain_wm.pdf --from 1000
+python -m exp_navsim.test_model --config exp_navsim/wm/config.yaml \
+    --ckpt logs_navsim_wm/<run>/checkpoints/last.ckpt --num 5
 ```
 
 ## Data-format assumption

@@ -1,0 +1,81 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\pgfdeclarelayer{panelbg}
+\pgfsetlayers{panelbg,background,main}
+
+\begin{document}
+\begin{tikzpicture}[dnode/.append style={text width=30mm}]
+
+% ============ image branch ============
+\node[io] (lat) {cached latents\\$(B,T_{\mathrm{img}},C,H,W)$};
+\node[learn, right=13mm of lat] (agg)
+    {\textbf{ImageAggregator}\\$N$ tokens per frame\\$+$ slot position emb.};
+\node[latentn, right=13mm of agg] (itok)
+    {image tokens\\$(B,\,T_{\mathrm{img}}N,\,D)$};
+\draw[arrow] (lat) -- (agg);
+\draw[arrow] (agg) -- (itok);
+
+% ============ trajectory branch ============
+\node[io, below=30mm of lat] (vin) {noisy $\hat v$\ \ $(B,T,2)$};
+\node[proc, below=5mm of vin]  (temb) {time emb.\ $e_{\mathrm{time}}$};
+\node[proc, below=5mm of temb] (femb) {frame emb.\ $e_{\mathrm{frame}}$};
+
+\node[fit=(vin)(femb), inner sep=0pt, draw=none] (TIN) {};
+\node[latentn, right=13mm of TIN, text width=32mm] (cat)
+    {per-point feature\\$[\,\hat v_i,\;e_{\mathrm{time}},\;e_{\mathrm{frame},i}\,]$};
+\foreach \n in {vin,temb,femb} {\draw[arrow] (\n.east) -- (cat.west);}
+
+\node[head, above right=4mm and 13mm of cat.east] (cmlp)
+    {context MLP\\first $c$ frames};
+\node[head, below right=4mm and 13mm of cat.east] (pmlp)
+    {prediction MLP\\the rest};
+\draw[arrow] (cat.east) -- (cmlp.west);
+\draw[arrow] (cat.east) -- (pmlp.west);
+
+% ============ key/value memory and the attention stack ============
+\node[fit=(cmlp)(pmlp), inner sep=0pt, draw=none] (MLPS) {};
+\node[seqn, right=15mm of MLPS, text width=34mm] (seq)
+    {keys / values\\$[\,\mathrm{img}\;\|\;\mathrm{ctx}\;\|\;\mathrm{pred}\,]$};
+\draw[arrow] (cmlp.east) -- (seq.west);
+\draw[arrow] (pmlp.east) -- (seq.west);
+
+\coordinate (seqIn) at ($(seq.north west)+(9mm,0)$);
+\draw[arrow] (itok.south) -- (itok |- seqIn) -- (seqIn);
+
+\node[attn, right=16mm of seq, text width=34mm, minimum height=19mm] (tb)
+    {$\mathbf{2\times}$ \textbf{TemporalBlock}\\cross-attention\\AdaLN-Zero on $e_{\mathrm{time}}$};
+\draw[arrow] (seq) -- (tb) node[tag, midway, above] {memory};
+
+% queries come from the prediction stream, in a lane below everything
+\coordinate (qLane) at ($(pmlp.south)+(0,-12mm)$);
+\draw[arrow] (pmlp.south) -- (pmlp |- qLane) -- (tb |- qLane) -- (tb.south)
+    node[tag, pos=0.5, above=0.5mm] {queries: the prediction stream};
+
+% the refreshed predictions re-enter the memory at the next layer
+\coordinate (fbLane) at ($(tb.north)+(0,9mm)$);
+\coordinate (seqBack) at ($(seq.north east)+(-7mm,0)$);
+\draw[arrow, dashed, redDark!75]
+    (tb.north) -- (tb |- fbLane) -- (seqBack |- fbLane) -- (seqBack)
+    node[tag, text=redDark, pos=0.5, above=0.5mm] {refined at each layer};
+
+% ============ head ============
+\node[head, right=14mm of tb] (out) {LayerNorm\\$+$ Linear$(D\to2)$};
+\node[latentn, right=13mm of out] (flow) {flow field $\hat u$\\$(B,T-c,2)$};
+\draw[arrow] (tb) -- (out);
+\draw[arrow] (out) -- (flow);
+
+% ============ panels ============
+\node[fit=(lat)(itok), inner sep=0pt, draw=none] (rowImg) {};
+\node[fit=(vin)(femb)(cat)(cmlp)(pmlp), inner sep=0pt, draw=none] (rowTraj) {};
+
+\begin{pgfonlayer}{panelbg}
+\node[panelA, fit=(rowImg), inner xsep=7mm, inner ysep=9mm] (P1) {};
+\node[panelB, fit=(rowTraj), inner xsep=7mm, inner ysep=9mm] (P2) {};
+\end{pgfonlayer}
+
+\panelbadge{blueDark}{badgeA}{1}{P1}{Image branch}
+\panelbadge{greenDark}{badgeB}{2}{P2}{Trajectory branch}
+
+\end{tikzpicture}
+\end{document}

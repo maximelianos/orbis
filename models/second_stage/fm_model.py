@@ -49,10 +49,11 @@ class Model(pl.LightningModule):
     - sample: to generate new samples from the model (from start to end), given a set of input frames.
     - roll_out: to generate a sequence of samples autoregressively, given a set of starting input frames and a number of frames to generate.
     """
-    def __init__(self, *, tokenizer_config, generator_config, adjust_lr_to_batch_size=False, sigma_min=1e-5, timescale=1.0, enc_scale=4, warmup_steps=5000, min_lr_multiplier=0.1):
+    def __init__(self, *, tokenizer_config, generator_config, adjust_lr_to_batch_size=False, sigma_min=1e-5, timescale=1.0, enc_scale=4, warmup_steps=5000, min_lr_multiplier=0.1, num_pred_frames=1):
         super().__init__()
         self.warmup_steps = warmup_steps
         self.min_lr_multiplier = min_lr_multiplier
+        self.num_pred_frames = num_pred_frames
         
         # Training parameters
         self.adjust_lr_to_batch_size = adjust_lr_to_batch_size
@@ -133,11 +134,20 @@ class Model(pl.LightningModule):
     def get_input(self, batch, k):
         if type(batch) == dict:
             x = batch[k]
-            frame_rate = batch['frame_rate']
+            frame_rate = batch.get('frame_rate')
         else:
             x = batch
             frame_rate = None
-        assert len(x.shape) == 5, 'input must be 5D tensor'
+
+        # Image datasets return [B, C, H, W]; video datasets return [B, F, C, H, W].
+        if len(x.shape) == 4:
+            x = x.unsqueeze(1)
+
+        assert len(x.shape) == 5, 'input must be 4D or 5D tensor'
+
+        if frame_rate is None:
+            frame_rate = torch.full((x.shape[0],), 5, device=x.device, dtype=torch.float32)
+
         return x, frame_rate
     
     
@@ -182,21 +192,15 @@ class Model(pl.LightningModule):
         x = self.encode_frames(images)
 
         b, f, e, h, w = x.size()
-        
-        if f == 1:
-            context = None
-            target = x.squeeze(1)
-        else:
-            context = x[:,:-1].clone()
-            target = x[:,-1]
+
+        context = x[:,:-1].clone() if f > 1 else None
+        target = x[:,-1:]  # [B, 1, e, h, w] — keep frame dim
 
         t = torch.rand((x.shape[0],), device=x.device)
         target_t, noise = self.add_noise(target, t)
-        
-        target_t = target_t.unsqueeze(1)
-        
+
         pred = self.vit(target_t, context, t, frame_rate=frame_rate)
-        
+
         # -dxt/dt
         target = self.A(t) * target + self.B(t) * noise
 
@@ -218,21 +222,15 @@ class Model(pl.LightningModule):
         x = self.encode_frames(images)
 
         b, f, e, h, w = x.size()
-        
-        if f == 1:
-            context = None
-            target = x.squeeze(1)
-        else:
-            context = x[:,:-1].clone()
-            target = x[:,-1]
+
+        context = x[:,:-1].clone() if f > 1 else None
+        target = x[:,-1:]  # [B, 1, e, h, w] — keep frame dim
 
         t = torch.rand((x.shape[0],), device=x.device)
         target_t, noise = self.add_noise(target, t)
-        
-        target_t = target_t.unsqueeze(1)
-        
+
         pred = self.vit(target_t, context, t, frame_rate=frame_rate)
-        
+
         # -dxt/dt
         target = self.A(t) * target + self.B(t) * noise
 
@@ -311,10 +309,10 @@ class Model(pl.LightningModule):
         frame_rate = frame_rate[:N] if frame_rate is not None else None
         b, f, e, h, w = images.size()
 
-        l_visual_recon = [images[:,f] for f in range(images.size(1))]
-        l_visual_recon_ema = [images[:,f] for f in range(images.size(1))]
-        
-        
+        l_visual_recon = [images[:,i] for i in range(images.size(1))]
+        l_visual_recon_ema = [images[:,i] for i in range(images.size(1))]
+
+
         images = images[:,:-1] if f > 1 else None
 
         # sample
@@ -331,7 +329,7 @@ class Model(pl.LightningModule):
         sampled = vutils.make_grid(sampled, nrow=N, padding=2, normalize=False,)
         
         # sample
-        samples_ema = self.sample(images, eta=0.0, NFE=30, sample_with_ema=True, num_samples=N)[1]
+        samples_ema = self.sample(images, eta=0.0, NFE=30, sample_with_ema=True, num_samples=N, frame_rate=frame_rate)[1]
         # Only keep N first generated frame
         samples_ema = samples_ema[:N, 0]
 
@@ -353,7 +351,8 @@ class ModelIF(Model):
     Flow matching model for token factorization latents (IF: Image Folder)
     """
     def __init__(self, *, tokenizer_config, generator_config, adjust_lr_to_batch_size=False, 
-                 sigma_min=1e-5, timescale=1.0, enc_scale=1.89066, enc_scale_dino=3.45062, warmup_steps=5000, min_lr_multiplier=0.1):
+                 sigma_min=1e-5, timescale=1.0, enc_scale=1.89066, enc_scale_dino=3.45062, warmup_steps=5000, min_lr_multiplier=0.1,
+                 **kwargs):
         super().__init__(
             tokenizer_config=tokenizer_config,
             generator_config=generator_config,
@@ -362,7 +361,8 @@ class ModelIF(Model):
             timescale=timescale,
             enc_scale=enc_scale,
             warmup_steps=warmup_steps,
-            min_lr_multiplier=min_lr_multiplier
+            min_lr_multiplier=min_lr_multiplier,
+            **kwargs
         )
         self.enc_scale_dino = enc_scale_dino
         
@@ -374,35 +374,28 @@ class ModelIF(Model):
 
         b, f, e, h, w = x.size()
 
-        
-        if f == 1:
-            context = None
-            target = x.squeeze(1)
-        else:
-            context = x[:,:-1].clone()
-            target = x[:,-1]
+        context = x[:,:-1].clone() if f > 1 else None
+        target = x[:,-1:]  # [B, 1, e, h, w] — keep frame dim
 
         t = torch.rand((x.shape[0],), device=x.device)
         target_t, noise = self.add_noise(target, t)
-        
-        target_t = target_t.unsqueeze(1)
-        
+
         pred = self.vit(target_t, context, t, frame_rate=frame_rate)
-        
+
         # -dxt/dt
         target = self.A(t) * target + self.B(t) * noise
 
         loss = ((pred.float() - target.float()) ** 2)
-        
+
         loss_recon = loss[:,:loss.size(1)//2].mean()
         loss_sem = loss[:,loss.size(1)//2:].mean()
         loss = loss.mean()
-            
+
         self.log("train/loss", loss.item(), prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
         self.log("train/loss_recon", loss_recon.item(), prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
         self.log("train/loss_sem", loss_sem.item(), prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-        
-        return loss 
+
+        return loss
 
 
 
@@ -411,22 +404,15 @@ class ModelIF(Model):
         x = self.encode_frames(images)
 
         b, f, e, h, w = x.size()
-        
-        if f == 1:
-            context = None
-            target = x.squeeze(1)
-        else:
-            context = x[:,:-1].clone()
-            target = x[:,-1]
+
+        context = x[:,:-1].clone() if f > 1 else None
+        target = x[:,-1:]  # [B, 1, e, h, w] — keep frame dim
 
         t = torch.rand((x.shape[0],), device=x.device)
         target_t, noise = self.add_noise(target, t)
-        
-        target_t = target_t.unsqueeze(1)
-        
-        
+
         pred = self.vit(target_t, context, t, frame_rate=frame_rate)
-        
+
         # -dxt/dt
         target = self.A(t) * target + self.B(t) * noise
 

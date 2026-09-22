@@ -1,0 +1,47 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\pgfdeclarelayer{panelbg}
+\pgfsetlayers{panelbg,background,main}
+
+\begin{document}
+\begin{tikzpicture}[dnode/.append style={text width=27mm, minimum height=12mm}]
+
+% ============ row 1: offline preparation, run once ============
+\node[io] (logs) {navtrain logs\\$+$ sensor blobs};
+\node[proc, right=11mm of logs] (index) {episode index\\contiguous on-disk runs};
+\node[proc, right=11mm of index] (long) {front views\\$256^2$ @ $2$\,Hz};
+\node[frozen, right=11mm of long] (tok) {frozen Orbis\\tokenizer $\mathcal{E}_s$};
+\node[latentn, right=11mm of tok] (h5) {latent cache\\$9\,577$ HDF5 episodes};
+
+\foreach \a/\b in {logs/index, index/long, long/tok, tok/h5} {\draw[arrow] (\a) -- (\b);}
+
+% ============ row 2: the training loop ============
+\node[latentn, below=26mm of logs] (win) {window dataset\\whole trajectory,\\first $2$ latents};
+\node[proc, right=11mm of win]  (buf)  {ring buffer\\hides disk latency};
+\node[proc, right=11mm of buf]  (coll) {\texttt{pad\_collate}\\$(B,T_{\max})$ $+$ lengths};
+\node[learn, right=11mm of coll] (probe) {flow-matching\\probe (denoiser)};
+\node[head, right=11mm of probe] (eval) {\texttt{val/mse}, \texttt{val/std},\\BEV pages};
+
+\foreach \a/\b in {win/buf, buf/coll, coll/probe, probe/eval} {\draw[arrow] (\a) -- (\b);}
+
+% ============ the one link between the rows ============
+\coordinate (linkLane) at ($(h5.south)!0.5!(win.north)$);
+\draw[arrow, dashed] (h5.south) -- (h5 |- linkLane) -- (win |- linkLane) -- (win.north)
+    node[tag, pos=0.5, above=0.5mm]
+    {only the latents the model actually looks at are read};
+
+% ============ panels ============
+\node[fit=(logs)(h5), inner sep=0pt, draw=none] (rowA) {};
+\node[fit=(win)(eval), inner sep=0pt, draw=none] (rowB) {};
+
+\begin{pgfonlayer}{panelbg}
+\node[panelA, fit=(rowA), inner xsep=7mm, inner ysep=10mm] (P1) {};
+\node[panelB, fit=(rowB), inner xsep=7mm, inner ysep=10mm] (P2) {};
+\end{pgfonlayer}
+
+\panelbadge{blueDark}{badgeA}{1}{P1}{Offline, run once}
+\panelbadge{greenDark}{badgeB}{2}{P2}{Training and evaluation}
+
+\end{tikzpicture}
+\end{document}

@@ -26,6 +26,15 @@ def resolve_checkpoint(ckpt=None, last_ckpt=False, logdir="logs_nuplan"):
     if ckpt is None:
         raise ValueError("Either ckpt must be provided or last_ckpt must be true")
 
+    if os.path.isdir(ckpt):
+        # Accept either a run dir (logs_navsim/<run>/) or its checkpoints/ subdir.
+        for candidate in (os.path.join(ckpt, "last.ckpt"),
+                          os.path.join(ckpt, "checkpoints", "last.ckpt")):
+            if os.path.exists(candidate):
+                print(f"Using last checkpoint from {candidate}")
+                return candidate
+        raise ValueError(f"No last.ckpt found under {ckpt}")
+
     if not os.path.exists(ckpt):
         raise ValueError(f"Checkpoint not found at {ckpt}")
 

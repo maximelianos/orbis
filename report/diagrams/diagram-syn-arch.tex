@@ -1,0 +1,47 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\begin{document}
+\begin{tikzpicture}[dnode/.append style={text width=27mm}]
+
+% ============ inputs, stacked on the left ============
+\node[io] (tin) {diffusion time $t$\\$(B,)$};
+\node[io, above=7mm of tin] (vin) {noisy $\hat v$\\$(B,T,2)$};
+\node[io, below=7mm of tin] (fin) {frame index\\$\mathrm{arange}(T)/T$};
+
+\node[proc, right=13mm of tin] (temb) {time embedding\\$e_{\mathrm{time}}$};
+\node[proc, right=13mm of fin] (femb) {frame embedding\\$e_{\mathrm{frame}}$};
+\draw[arrow] (tin) -- (temb);
+\draw[arrow] (fin) -- (femb);
+
+% ============ concat, encoder, attention stack, head ============
+\node[fit=(vin)(temb)(femb), inner sep=0pt, draw=none] (INP) {};
+\node[latentn, right=13mm of INP, text width=30mm] (cat)
+    {concatenate\\$[\,\hat v_i,\;e_{\mathrm{time}},\;e_{\mathrm{frame},i}\,]$};
+\foreach \n in {vin,temb,femb} {\draw[arrow] (\n.east) -- (cat.west);}
+
+\node[head, right=12mm of cat] (mlp) {pointwise MLP\\$4\times$ Linear $+$ Tanh};
+\node[attn, right=13mm of mlp, text width=30mm, minimum height=17mm] (tb)
+    {$\mathbf{4\times}$ \textbf{temporal}\\\textbf{self-attention}\\AdaLN-Zero};
+\node[head, right=13mm of tb] (lin) {Linear $(D\to2)$};
+\node[latentn, right=12mm of lin] (flow) {flow field $\hat u$\\$(B,T,2)$};
+
+\draw[arrow] (cat) -- (mlp);
+\draw[arrow] (mlp) -- (tb) node[tag, midway, above] {$(B,T,D)$};
+\draw[arrow] (tb) -- (lin);
+\draw[arrow] (lin) -- (flow);
+
+% ============ AdaLN conditioning, routed in its own lane ============
+\node[cond, below=15mm of tb, text width=30mm] (cnd)
+    {AdaLN-Zero\\SiLU $+$ Linear$(D,8D)$};
+\draw[arrow, purpleDark!80] (cnd) -- (tb)
+    node[tag, midway, right, text=purpleDark] {shift / scale / gate};
+
+\coordinate (condLane) at ($(cnd.south)+(0,-9mm)$);
+\draw[arrow, dashed, purpleDark!80]
+    (temb.south) -- (temb |- condLane) -- (cnd |- condLane) -- (cnd.south)
+    node[note, text=purpleDark, pos=0.5, below=1mm]
+    {the diffusion-time embedding is the only conditioning; the turn scalar is zeroed};
+
+\end{tikzpicture}
+\end{document}

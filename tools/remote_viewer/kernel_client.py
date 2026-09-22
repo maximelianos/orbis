@@ -1,5 +1,8 @@
 """Minimal Jupyter kernel client — drives a remote kernel without a notebook.
 
+Runs on your LOCAL PC: imported by view_episode.py to talk to the kernel over
+the tunnel. Nothing here runs on the cluster.
+
 A Jupyter kernel is just a process speaking a documented message protocol, so
 anything can drive it. There are two ways in:
 

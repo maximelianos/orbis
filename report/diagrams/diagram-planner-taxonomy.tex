@@ -1,0 +1,75 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\pgfdeclarelayer{panelbg}
+\pgfsetlayers{panelbg,background,main}
+
+\begin{document}
+\begin{tikzpicture}[
+    tcat/.append style ={text width=34mm, minimum height=13mm},
+    tleaf/.append style={text width=42mm, minimum height=12mm},
+    tmine/.append style={text width=42mm, minimum height=12mm},
+]
+
+\node[troot, text width=42mm, minimum height=12mm] (root)
+    {Driving trajectory planners};
+
+\node[tcat, below=14mm of root] (lrn) {Learned driving\\policies};
+\node[tcat, left=24mm of lrn]   (cls) {Rule-based \&\\optimization};
+\node[tcat, right=24mm of lrn]  (wm)  {World-model-based};
+
+\coordinate (bus) at ($(root.south)+(0,-7mm)$);
+\draw[plainline] (root.south) -- (bus);
+\foreach \c in {cls,lrn,wm} {\draw[arrow] (bus) -| (\c.north);}
+
+\node[fit=(cls)(lrn)(wm), inner sep=0pt, draw=none] (CATS) {};
+\coordinate (dropY)   at ($(CATS.south)+(0,-6mm)$);
+\coordinate (leafRow) at ($(CATS.south)+(0,-13mm)$);
+
+% ---- rule-based ----
+\node[tleaf, anchor=north] (c1) at (cls |- leafRow)
+    {Graph search \& lattices\\(Dijkstra, A$^*$, hybrid A$^*$)};
+\node[tleaf, below=4.5mm of c1] (c2) {Sampling-based\\(RRT, RRT$^*$, PRM, BIT$^*$)};
+\node[tleaf, below=4.5mm of c2] (c3) {Frenet-frame curves\\\& MPC optimization};
+\node[tleaf, below=4.5mm of c3] (c4) {IDM, PDM-Closed};
+
+% ---- learned policies ----
+\node[tleaf, anchor=north] (l1) at (lrn |- leafRow)
+    {Sensor-fusion imitation\\(TransFuser, TCP)};
+\node[tleaf, below=4.5mm of l1] (l2) {Planning-oriented modular\\(UniAD, VAD)};
+\node[tleaf, below=4.5mm of l2] (l3) {Propose-and-score\\(Hydra-MDP, GTRS)};
+\node[tleaf, below=4.5mm of l3] (l4) {Generative heads\\(DiffusionDrive)};
+\node[tleaf, below=4.5mm of l4] (l5) {RL and VLM / VLA\\(CaRL, EMMA)};
+
+% ---- world-model-based ----
+\node[tleaf, anchor=north] (w1) at (wm |- leafRow)
+    {Representation pre-training\\(PPGeo, ViDAR)};
+\node[tleaf, below=4.5mm of w1] (w2) {Imagine \& score\\(Drive-WM, WoTE, NWM)};
+\node[tleaf, below=4.5mm of w2] (w3) {Latent auxiliary prediction\\(LAW, World4Drive)};
+\node[tmine, below=4.5mm of w3] (w4)
+    {\textbf{This work:} probe a\\\emph{frozen} world-model latent};
+
+% ============ spines ============
+\coordinate (spcls) at ($(c1.west)+(-7mm,0)$);
+\coordinate (splrn) at ($(l1.west)+(-7mm,0)$);
+\coordinate (spwm)  at ($(w1.west)+(-7mm,0)$);
+\draw[plainline] (cls.south) -- (cls |- dropY) -- (spcls |- dropY) -- (spcls |- c4);
+\draw[plainline] (lrn.south) -- (lrn |- dropY) -- (splrn |- dropY) -- (splrn |- l5);
+\draw[plainline] (wm.south)  -- (wm  |- dropY) -- (spwm  |- dropY) -- (spwm  |- w4);
+\foreach \n in {c1,c2,c3,c4}    {\draw[arrow] (spcls |- \n) -- (\n.west);}
+\foreach \n in {l1,l2,l3,l4,l5} {\draw[arrow] (splrn |- \n) -- (\n.west);}
+\foreach \n in {w1,w2,w3,w4}    {\draw[arrow] (spwm  |- \n) -- (\n.west);}
+
+% ============ legend ============
+\node[fit=(c4)(l5)(w4)(spcls |- c4), inner sep=0pt, draw=none] (LEAVES) {};
+\node[chip, draw=blue!60!black, fill=attention, below=11mm of LEAVES.west] (lg1) {};
+\node[chiptext, right=2mm of lg1] (lg1t) {family};
+\legendchip{grayDark!70}{white}{lg2}{lg1t}{representative methods}
+\legendchip{redDark}{flow}{lg3}{lg2t}{where this report sits}
+
+\begin{pgfonlayer}{panelbg}
+\node[legendbox, fit=(lg1)(lg3t), inner xsep=6mm, inner ysep=3.5mm] {};
+\end{pgfonlayer}
+
+\end{tikzpicture}
+\end{document}

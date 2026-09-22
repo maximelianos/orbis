@@ -6,6 +6,7 @@ Contains blocks for aggregating spatial information from image latents.
 
 import os
 import sys
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -96,16 +97,19 @@ class CrossAttentionBlock(nn.Module):
         nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
     
-    def forward(self, context, query_tokens, condition):
+    def forward(self, context, query_tokens, condition, key_padding_mask=None):
         """
         Forward pass: aggregate tokens via cross-attention.
-        
+
         Args:
             context: Input tokens of shape (B, N, D)
                where B=batch, N=sequence length, D=channels
             query_tokens: shape (B, M, D)
             condition: single vector (B, D) for AdaLN conditioning
-        
+            key_padding_mask: optional (B, N) bool mask over the context tokens,
+               True marking a token the queries must NOT attend to (the padded
+               tail of a variable-length batch). None attends to everything.
+
         Returns:
             aggregated: Output tokens of shape (B, M, D)
         """
@@ -140,6 +144,7 @@ class CrossAttentionBlock(nn.Module):
             query=query,
             key=keys,
             value=values,
+            key_padding_mask=key_padding_mask,
         )
         # attn_out: (B, M, D)
         # attn_weights: (B, M, N)
@@ -222,9 +227,16 @@ class SpatialBlock(nn.Module):
             dropout=dropout,
         )
         
-        self.pos_embed_1d = PositionEmbedding1d(embed_dim)
+        # The M query tokens are a fixed 1D position embedding: M is known here,
+        # so the table is built once (like DiT's pos_embed, networks/DiT/dit.py)
+        # instead of being recomputed — through numpy, on the CPU — every call.
+        # Non-persistent: fully determined by (M, embed_dim), never checkpointed.
+        query_pos = get_1d_sincos_pos_embed_from_grid(
+            embed_dim, np.arange(num_predictions, dtype=np.float32))     # (M, D)
+        self.register_buffer("query_pos", torch.from_numpy(query_pos).float(),
+                             persistent=False)
         self.pos_embed_2d = PositionEmbedding2d(embed_dim)
-    
+
     def forward(self, x, condition):
         """
         Forward pass: aggregate spatial information via cross-attention.
@@ -251,9 +263,8 @@ class SpatialBlock(nn.Module):
         pos_embed = self.pos_embed_2d(H, W, x.device).unsqueeze(0)  # (1, H*W, embed_dim)
         x_pos = x_flat + pos_embed  # (B*T, H*W, embed_dim)
         
-        # Generate queries
-        pos_emb = self.pos_embed_1d(torch.arange(0, M, device=x.device)) # (M, D)
-        query = pos_emb.view(1, M, D).expand(BT, M, D) # (BT, M, D)
+        # Generate queries from the table built in __init__.
+        query = self.query_pos.view(1, M, D).expand(BT, M, D) # (BT, M, D)
         
         # Apply cross-attention aggregation with AdaLN conditioning
         aggregated = self.cross_attn_block(x_pos, query, condition)  # (B*T, M, D)
@@ -313,7 +324,7 @@ class TemporalBlock(nn.Module):
 
         self.pos_embed_1d = PositionEmbedding1d(embed_dim)
 
-    def forward(self, context, query, condition):
+    def forward(self, context, query, condition, key_padding_mask=None):
         """
         Forward pass: predict future tokens from context via cross-attention.
 
@@ -325,6 +336,9 @@ class TemporalBlock(nn.Module):
                where B=batch, N=context length, C=channels
             query: (B, M, D) — one row per predicted token
             condition: AdaLN conditioning vector of shape (B, D)
+            key_padding_mask: optional (B, N) bool mask over the context tokens,
+               True marking a token to ignore (padded frames of a
+               variable-length batch). None attends to everything.
 
         Returns:
             predictions: Output tokens of shape (B, M, D)
@@ -334,7 +348,8 @@ class TemporalBlock(nn.Module):
         assert D == self.embed_dim, f"Expected {self.embed_dim} channels, got {D}"
 
         # Cross-attention prediction with AdaLN conditioning
-        predictions = self.cross_attn_block(context, query, condition)  # (B, M, embed_dim)
+        predictions = self.cross_attn_block(context, query, condition,
+                                            key_padding_mask=key_padding_mask)  # (B, M, embed_dim)
 
         expected_shape = (B, M, self.embed_dim)
         assert predictions.shape == expected_shape, f"Expected {expected_shape}, got {predictions.shape}"

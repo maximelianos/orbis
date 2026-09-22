@@ -1,0 +1,56 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\begin{document}
+\begin{tikzpicture}
+
+% ============ stage 1 ============
+\node[io, text width=22mm] (real) {real\\observation};
+\node[proc, right=11mm of real, text width=22mm] (agent) {agent\\(planner)};
+\node[learn, right=13mm of agent, text width=27mm, minimum height=15mm] (s1)
+    {\textbf{Stage 1}\\BEV simulation\\$\to\;s_1,\ \hat{x}$};
+
+\draw[arrow] (real) -- (agent);
+\draw[arrow] (agent) -- (s1) node[tag, midway, above] {$4$\,s traj.};
+
+% ============ pre-rendered synthetic observations ============
+% anchor=west on a named coordinate, so the gap after Stage 1 is a real
+% gap and not swallowed by the box's own half-width
+\coordinate (synWest) at ($(s1.east)+(17mm,0)$);
+\node[head, anchor=west, text width=32mm] (syn2) at (synWest) {synthetic obs.\ $x^2$};
+\node[head, above=5mm of syn2, text width=32mm] (syn1) {synthetic obs.\ $x^1$};
+\node[font=\large, below=3.5mm of syn2] (vd) {$\vdots$};
+\node[head, below=3.5mm of vd, text width=32mm] (syn3) {synthetic obs.\ $x^i$};
+\node[note, above=4mm of syn1] (synlbl) {3D Gaussian Splatting, pre-generated};
+
+% ============ stage 2 and the combined score ============
+\node[fit=(syn1)(syn2)(vd)(syn3), inner sep=0pt, draw=none] (synCol) {};
+\coordinate (s2West) at ($(synCol.east)+(17mm,0)$);
+\node[learn, anchor=west, text width=27mm, minimum height=15mm] (s2) at (s2West |- s1)
+    {\textbf{Stage 2}\\score $s_2^{\,i}$\\for every scene};
+\node[cond, right=13mm of s2, text width=32mm, minimum height=15mm] (comb)
+    {\textbf{combined EPDMS}\\$s_1\cdot\sum_i \hat{w}^{\,i} s_2^{\,i}$};
+
+% ============ orthogonal fan out and back in ============
+% one shared riser on each side, so the three branches are parallel
+% instead of three diagonals radiating from a single point
+\coordinate (fanOut) at ($(s1.east)+(8mm,0)$);
+\draw[plainline] (s1.east) -- (fanOut);
+\foreach \n in {syn1,syn2,syn3} {\draw[arrow] (fanOut) |- (\n.west);}
+
+\coordinate (fanIn) at ($(s2.west)+(-8mm,0)$);
+\foreach \n in {syn1,syn2,syn3} {\draw[plainline] (\n.east) -| (fanIn);}
+\draw[arrow] (fanIn) -- (s2.west);
+
+\draw[arrow] (s2) -- (comb);
+
+% ============ the proximity weights, in a lane of their own ============
+\node[fit=(real)(comb)(syn3)(synlbl), inner sep=0pt, draw=none] (ALL) {};
+\coordinate (wLane) at ($(ALL.south)+(0,-9mm)$);
+\draw[arrow, dashed, purpleDark!80]
+    (s1.south) -- (s1 |- wLane) -- (comb |- wLane) -- (comb.south)
+    node[note, text=purpleDark, pos=0.5, below=1mm]
+    {proximity weights $\hat{w}^{\,i}$: how close each $x^i$ is to the Stage-1 endpoint $\hat{x}$};
+
+\end{tikzpicture}
+\end{document}

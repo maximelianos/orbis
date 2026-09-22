@@ -212,13 +212,15 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
     """
     import torch
 
+    from evaluate.checkpoint import resolve_checkpoint
     from exp_navsim.data.navsim_base import in_split
     from exp_navsim.model import NavsimTrajectoryModel
 
     if _VIEWER.get("ckpt") != (ckpt, split):
         _dataset()                           # binds cfg + cache to this config first
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = NavsimTrajectoryModel.load_from_checkpoint(ckpt, map_location=device)
+        ckpt_path = resolve_checkpoint(ckpt=ckpt)
+        model = NavsimTrajectoryModel.load_from_checkpoint(ckpt_path, map_location=device)
         if model.encode_images:
             raise RuntimeError("viewer supports encoded mode only (model.encode_images is set)")
 
@@ -307,9 +309,9 @@ def _window_batch(state, starts, total_len):
         trajectory = f["trajectory"][:]
         frame_rate = int(f.attrs.get("frame_rate", 2))
         for start in starts:
-            # Only encoded_q_sem is read: get_encoded_q uses nothing else, and this
-            # runs once per displayed frame, so the skipped q_rec read matters.
-            q_sem = f["encoded_q_sem"][start:start + min(context_images, total_len)]
+            img_sl = slice(start, start + min(context_images, total_len))
+            q_sem = f["encoded_q_sem"][img_sl]
+            q_rec = f["encoded_q_rec"][img_sl]
 
             traj = np.asarray(trajectory[start:start + total_len], dtype=np.float32)
             traj = traj - traj[0]
@@ -319,6 +321,7 @@ def _window_batch(state, starts, total_len):
                 traj = np.concatenate([traj, np.repeat(traj[-1:], pad, axis=0)], axis=0)
             samples.append({
                 "encoded_q_sem": torch.from_numpy(np.asarray(q_sem)).float(),
+                "encoded_q_rec": torch.from_numpy(np.asarray(q_rec)).float(),
                 "trajectory": torch.from_numpy(traj).float(),
                 "velocity": torch.from_numpy(traj_to_velocity(traj)).float(),
                 "frame_rate": frame_rate,

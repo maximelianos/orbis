@@ -427,3 +427,19 @@ Pre-filter episodes for cross-roads based on map.
 We need the part of the episode, where the car doesn't turn yet, then we can get an intereseting distribution.
 
 SAE analysis of the intermediate tokens
+
+### 10.09.2026
+
+- use pred buffering
+- use heading from previous step -> correct trajectory visualization
+
+short horizon for EPDMS
+increase std of noise in inference
+DINO enc instead of orbis enc
+
+### 21.09.2026
+
+loss imbalance for short/long episodes?
+Add augmentation with random windows 
+
+scored_mask remove comment

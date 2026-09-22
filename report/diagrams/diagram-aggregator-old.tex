@@ -1,0 +1,38 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\begin{document}
+\begin{tikzpicture}[
+    font=\small,
+    dnode/.append style={text width=34mm},
+    tok/.style={rounded corners=2pt, draw=blue!60!black, fill=attention,
+                minimum size=6mm, inner sep=0pt},
+    pt/.style ={rounded corners=2pt, draw=grayDark!70, fill=neutral,
+                minimum size=6mm, inner sep=0pt},
+]
+
+\node[latentn] (grid) {latent grid\\$(C,H,W)$, frame $i$};
+\node[learn, below=9mm of grid] (sp) {SpatialBlock\\$M=1$ query};
+\draw[arrow] (grid) -- (sp);
+
+\node[tok, below=9mm of sp] (t1) {};
+\draw[arrow] (sp) -- (t1);
+\node[note, right=4mm of t1, anchor=west] {one pooled token\\for the whole frame};
+
+% ---- the token is concatenated into every per-point feature ----
+\node[pt, below=13mm of t1] (p3) {};
+\node[pt, left=3mm of p3] (p2) {};
+\node[pt, left=3mm of p2] (p1) {};
+\node[pt, right=3mm of p3] (p4) {};
+\node[pt, right=3mm of p4] (p5) {};
+
+\foreach \n in {p1,p2,p3,p4,p5} {\draw[thinarrow] (t1.south) -- (\n.north);}
+
+\node[fit=(p1)(p5), inner sep=0pt, draw=none] (PTS) {};
+\node[note, below=3mm of PTS] (ptlbl)
+    {per-point features, width $2+3D$};
+\node[note, text=redDark, below=6mm of ptlbl]
+    {every frame past the image context\\is given a \emph{zero} token};
+
+\end{tikzpicture}
+\end{document}

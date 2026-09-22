@@ -1,0 +1,86 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\pgfdeclarelayer{panelbg}
+\pgfsetlayers{panelbg,background,main}
+
+\begin{document}
+\begin{tikzpicture}[
+    % equal minimum heights so the three columns stay row-aligned
+    tcat/.append style ={text width=32mm, minimum height=13mm},
+    tleaf/.append style={text width=36mm, minimum height=12mm},
+    tmine/.append style={text width=36mm, minimum height=12mm},
+]
+
+% ============ root and the three categories ============
+\node[troot, text width=40mm, minimum height=13mm] (root)
+    {Generative \& predictive\\models for driving};
+
+\node[tcat, below=14mm of root] (arch) {Architecture};
+\node[tcat, left=22mm of arch]  (gen)  {Generative\\objectives};
+\node[tcat, right=22mm of arch] (wm)   {World models};
+
+\coordinate (bus) at ($(root.south)+(0,-7mm)$);
+\draw[plainline] (root.south) -- (bus);
+\foreach \c in {gen,arch,wm} {\draw[arrow] (bus) -| (\c.north);}
+
+% ============ one shared row for the first leaf of every column ============
+\node[fit=(gen)(arch)(wm), inner sep=0pt, draw=none] (CATS) {};
+\coordinate (dropY)   at ($(CATS.south)+(0,-6mm)$);
+\coordinate (leafRow) at ($(CATS.south)+(0,-13mm)$);
+
+% ---- generative objectives ----
+\node[tleaf, anchor=north] (g1) at (gen |- leafRow) {Diffusion (DDPM)};
+\node[tleaf, below=4.5mm of g1] (g2) {Masked / discrete\\token models};
+\node[tleaf, below=4.5mm of g2] (g3) {(VQ-)VAE tokenizers};
+\node[tleaf, below=4.5mm of g3] (g4) {Flow matching /\\rectified flow};
+
+% ---- architecture ----
+\node[tleaf, anchor=north] (a1) at (arch |- leafRow) {U-Net backbones};
+\node[tleaf, below=4.5mm of a1] (a2) {Diffusion\\transformer (DiT)};
+\node[tleaf, below=4.5mm of a2] (a3) {Spatio-temporal\\DiT / CDiT};
+
+% ---- world models ----
+\node[tleaf, anchor=north] (w1) at (wm |- leafRow) {Driving WMs:\\GAIA, Vista, GEM};
+\node[tleaf, below=4.5mm of w1] (w2) {Game / sim WMs:\\DIAMOND, GameNGen};
+\node[tleaf, below=4.5mm of w2] (w3) {Navigation WM (NWM)};
+\node[tmine, below=4.5mm of w3] (w4) {\textbf{Orbis}};
+
+% ============ spines: one polyline per column, taps of equal length ============
+% the spine x is measured from the LEAF edge, not the category edge,
+% because the leaves are the wider of the two
+\coordinate (spgen)  at ($(g1.west)+(-7mm,0)$);
+\coordinate (sparch) at ($(a1.west)+(-7mm,0)$);
+\coordinate (spwm)   at ($(w1.west)+(-7mm,0)$);
+\draw[plainline] (gen.south)  -- (gen  |- dropY) -- (spgen  |- dropY) -- (spgen  |- g4);
+\draw[plainline] (arch.south) -- (arch |- dropY) -- (sparch |- dropY) -- (sparch |- a3);
+\draw[plainline] (wm.south)   -- (wm   |- dropY) -- (spwm   |- dropY) -- (spwm   |- w4);
+\foreach \n in {g1,g2,g3,g4} {\draw[arrow] (spgen  |- \n) -- (\n.west);}
+\foreach \n in {a1,a2,a3}    {\draw[arrow] (sparch |- \n) -- (\n.west);}
+\foreach \n in {w1,w2,w3,w4} {\draw[arrow] (spwm   |- \n) -- (\n.west);}
+
+% ============ cross-links: Orbis = flow matching + STDiT ============
+\node[fit=(g4)(a3)(w4)(spgen |- g4), inner sep=0pt, draw=none] (LEAVES) {};
+\coordinate (laneA) at ($(LEAVES.south)+(0,-7mm)$);
+\coordinate (laneB) at ($(LEAVES.south)+(0,-14mm)$);
+
+\draw[xlink] (w4.south) -- (w4 |- laneA) -- (a3 |- laneA) -- (a3.south);
+\draw[xlink] (w4.south) -- (w4 |- laneB) -- (g4 |- laneB) -- (g4.south);
+
+\coordinate (xnoteAt) at (g4 |- laneB);
+\node[note, text=redDark, anchor=north west, below right=4mm and 3mm of xnoteAt]
+    (xnote) {Orbis $=$ flow-matching objective $+$ spatio-temporal DiT};
+
+% ============ legend ============
+\coordinate (legAt) at (LEAVES.west |- xnote);
+\node[chip, draw=blue!60!black, fill=attention, below=9mm of legAt] (lg1) {};
+\node[chiptext, right=2mm of lg1] (lg1t) {category};
+\legendchip{grayDark!70}{white}{lg2}{lg1t}{reviewed work}
+\legendchip{redDark}{flow}{lg3}{lg2t}{the model we probe}
+
+\begin{pgfonlayer}{panelbg}
+\node[legendbox, fit=(lg1)(lg3t), inner xsep=6mm, inner ysep=3.5mm] {};
+\end{pgfonlayer}
+
+\end{tikzpicture}
+\end{document}

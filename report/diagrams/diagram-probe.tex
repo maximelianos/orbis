@@ -1,0 +1,90 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\pgfdeclarelayer{panelbg}
+\pgfsetlayers{panelbg,background,main}
+
+\begin{document}
+\begin{tikzpicture}
+
+% ============ main chain, chained left to right ============
+\node[io, text width=20mm] (frames) {recent\\frames};
+\node[frozen, right=14mm of frames, text width=25mm] (enc)
+    {\textbf{Orbis encoder}\\$\mathcal{E}$};
+\node[latentn, right=11mm of enc, text width=19mm, minimum height=15mm] (grid)
+    {latent grid\\$\mathbf{x}$};
+\node[learn, right=15mm of grid, text width=27mm, minimum height=15mm] (probe)
+    {\textbf{Attention probe}\\fixed sinusoidal\\slot queries};
+\node[latentn, right=12mm of probe, text width=20mm] (ctx)
+    {context\\tokens $\mathbf{c}$};
+\node[learn, right=12mm of ctx, text width=27mm, minimum height=15mm] (fmhead)
+    {\textbf{Flow-matching head}\\directly in 2D\\trajectory space};
+
+\draw[arrow] (frames) -- (enc);
+\draw[arrow] (enc) -- (grid);
+\draw[arrow] (grid) -- (probe) node[tag, midway, above] {keys / values};
+\draw[arrow] (probe) -- (ctx);
+\draw[arrow] (ctx) -- (fmhead) node[tag, midway, above] {cond.};
+
+\node[note, below=4mm of enc] (nograd) {no gradient};
+\node[io, below=13mm of fmhead, text width=25mm] (noise)
+    {noise\\$\epsilon\sim\mathcal{N}(0,I)$};
+\draw[arrow] (noise) -- (fmhead);
+
+% ============ sampled-trajectory inset ============
+% invisible sized node so the axes can be drawn relative to it and
+% the caption below can be attached with the positioning library
+\node[draw=none, inner sep=0pt, minimum width=20mm, minimum height=24mm,
+      right=16mm of fmhead] (plot) {};
+\draw[arrow] (fmhead) -- (plot);
+
+\begin{scope}[shift={(plot.south west)}]
+  \draw[->, grayDark!55, line width=.6pt] (1mm,1mm) -- (1mm,23mm)
+      node[above, font=\scriptsize, text=black] {$y$};
+  \draw[->, grayDark!55, line width=.6pt] (1mm,1mm) -- (19mm,1mm)
+      node[right, font=\scriptsize, text=black] {$x$};
+  \draw[blueDark,  line width=.9pt]
+      (3mm,2mm) .. controls (6mm,8mm)  and (10mm,13mm) .. (16mm,19mm);
+  \draw[greenDark, line width=.9pt, dash pattern=on 2.2pt off 1.6pt]
+      (3mm,2mm) .. controls (5mm,9mm)  and (7mm,14mm)  .. (9mm,21mm);
+  \draw[redDark,   line width=.9pt, dash pattern=on 1.2pt off 1.4pt]
+      (3mm,2mm) .. controls (3mm,9mm)  and (2mm,15mm)  .. (4mm,21mm);
+  \fill[blueDark] (3mm,2mm) circle (1.3pt);
+\end{scope}
+\node[note, below=1mm of plot] (plotlbl) {sampled futures};
+
+% ============ panels ============
+\node[fit=(enc)(grid)(nograd), inner sep=0pt, draw=none] (frozenRaw) {};
+\node[fit=(probe)(ctx)(fmhead)(noise), inner sep=0pt, draw=none] (learnRaw) {};
+\node[fit=(frozenRaw)(learnRaw), inner sep=0pt, draw=none] (ALL) {};
+
+\coordinate (frameTop) at ($(ALL.north)+(0,0.95)$);
+\coordinate (frameBot) at ($(ALL.south)+(0,-0.35)$);
+
+\begin{pgfonlayer}{panelbg}
+\node[panelA, fit=(frozenRaw)(frozenRaw.north |- frameTop)
+                  (frozenRaw.south |- frameBot),
+      inner xsep=7mm, inner ysep=0pt] (P1) {};
+\node[panelC, fit=(learnRaw)(learnRaw.north |- frameTop)
+                  (learnRaw.south |- frameBot),
+      inner xsep=7mm, inner ysep=0pt] (P2) {};
+\end{pgfonlayer}
+
+\panelbadge{blueDark}{badgeA}{1}{P1}{Frozen world model}
+\panelbadge{redDark}{badgeB}{2}{P2}{Trained probe}
+
+% ============ legend ============
+\node[chip, draw=blue!55!black, fill=decoder] (lg1)
+    at ($(P1.south west)+(1.0,-1.0)$) {};
+\node[chiptext, right=2mm of lg1] (lg1t) {frozen, no gradient};
+\legendchip{orange!65!black}{latent}{lg2}{lg1t}{latent / context}
+\legendchip{redDark}{flow}{lg3}{lg2t}{trained by us}
+\legendchip{grayDark}{neutral}{lg4}{lg3t}{data in / out}
+
+\begin{pgfonlayer}{panelbg}
+\node[legendbox, fit=(lg1)(lg4t)(P1.south west)(P2.south east),
+      inner xsep=6mm, inner ysep=3.5mm] (legend) {};
+\end{pgfonlayer}
+
+\end{tikzpicture}
+\end{document}

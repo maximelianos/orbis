@@ -58,10 +58,17 @@ start=`date +%s`
 # python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 1000
 
 #python -m exp_navsim.test_decode       --config exp_navsim/config.yaml --num 3
-python train_nuplan.py -c exp_navsim/config.yaml --max_steps 1000000 --logdir logs_navsim
+#python train_nuplan.py -c exp_navsim/config.yaml --max_steps 1000000 --logdir logs_navsim
 #python -m exp_navsim.test_model --config exp_navsim/config.yaml \
 #    --ckpt logs_navsim/2026-07-22T23-01-41_config/checkpoints/last.ckpt --num 6
-python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 0
+
+#---NAVSIM+WM
+python train_nuplan.py -c exp_navsim/wm/config.yaml --max_steps 200000 --logdir logs_navsim_wm --resume logs_navsim_wm/2026-09-10T14-28-59_config/checkpoints/last.ckpt
+python tensorboard_to_pdf.py --logdir ./logs_navsim_wm --last --name navtrain.pdf --from 0
+
+python -m exp_navsim.test_model --config exp_navsim/wm/config.yaml \
+    --ckpt logs_navsim_wm/2026-09-13T00-49-29_config/checkpoints/last.ckpt --num 20
+
 
 
 # sleep 1000000000

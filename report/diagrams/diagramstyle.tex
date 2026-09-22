@@ -1,0 +1,118 @@
+% ============================================================
+% Shared preamble for every standalone diagram in this folder.
+%
+% Usage, from a file in this same directory:
+%
+%   \documentclass[tikz,border=8pt]{standalone}
+%   \input{diagramstyle}
+%   \begin{document} \begin{tikzpicture} ... \end{tikzpicture} \end{document}
+%
+% The palette is the one introduced by diagram-orbis.tex. That file
+% still carries its own inline copy of these definitions; if you ever
+% touch the palette, change it in both places or switch orbis over to
+% \input{diagramstyle} as well.
+% ============================================================
+
+\usepackage{amsmath,amssymb}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, calc, fit, backgrounds,
+                shapes.geometric, matrix, decorations.pathreplacing}
+
+% ---------- fills -------------------------------------------
+% Panel fills are OPAQUE pre-blended colours rather than transparent
+% ones, so a line can be given a halo in exactly the panel colour.
+% That is what turns an unavoidable crossing into a clean "hop".
+\definecolor{panelBlue}{RGB}{248,251,255}
+\definecolor{panelGreen}{RGB}{249,253,249}
+\definecolor{panelWarm}{RGB}{255,251,247}
+
+\definecolor{semantic}{RGB}{229,224,250}
+\definecolor{detail}{RGB}{218,246,228}
+\definecolor{latent}{RGB}{255,244,210}
+\definecolor{vq}{RGB}{244,232,255}
+\definecolor{flow}{RGB}{255,231,222}
+\definecolor{attention}{RGB}{224,239,255}
+\definecolor{decoder}{RGB}{231,236,255}
+\definecolor{neutral}{RGB}{243,244,246}
+
+% ---------- strokes -----------------------------------------
+\definecolor{blueDark}{RGB}{25,73,115}
+\definecolor{greenDark}{RGB}{35,120,78}
+\definecolor{purpleDark}{RGB}{105,70,145}
+\definecolor{redDark}{RGB}{145,65,55}
+\definecolor{grayDark}{RGB}{78,82,90}
+\definecolor{orangeDark}{RGB}{165,95,40}
+
+% ---------- styles ------------------------------------------
+\tikzset{
+    >=Latex,
+    % --- connectors ---
+    arrow/.style={->, line width=0.8pt, shorten >=1.5pt, shorten <=1.5pt},
+    thinarrow/.style={->, line width=0.6pt, shorten >=1.2pt, shorten <=1.2pt},
+    plainline/.style={line width=0.8pt},
+    dashedarrow/.style={->, dashed, line width=0.8pt,
+                        shorten >=1.5pt, shorten <=1.5pt},
+    xlink/.style={->, dashed, line width=0.9pt, redDark!70,
+                  shorten >=1.5pt, shorten <=1.5pt},
+    hop/.style={preaction={draw, line width=3.4pt, white}},
+    junction/.style={circle, fill=black, inner sep=0pt, minimum size=3.4pt},
+    %
+    % --- boxes: every one carries generous inner sep so text never
+    %     touches its own border ---
+    dnode/.style={rounded corners=5pt, align=center, font=\small,
+                  inner xsep=5pt, inner ysep=4pt, minimum height=9mm},
+    io/.style     ={dnode, draw=grayDark,      fill=neutral},
+    proc/.style   ={dnode, draw=blue!60!black, fill=attention},
+    latentn/.style={dnode, draw=orange!65!black, fill=latent},
+    learn/.style  ={dnode, draw=redDark,       fill=flow},
+    attn/.style   ={dnode, draw=blue!60!black, fill=attention},
+    head/.style   ={dnode, draw=greenDark,     fill=detail},
+    cond/.style   ={dnode, draw=purpleDark,    fill=vq},
+    seqn/.style   ={dnode, draw=blue!55!black, fill=decoder},
+    frozen/.style ={dnode, draw=blue!55!black, fill=decoder},
+    %
+    % --- tree nodes ---
+    troot/.style={dnode, draw=grayDark, fill=neutral, font=\small\bfseries,
+                  text width=34mm},
+    tcat/.style ={dnode, draw=blue!60!black, fill=attention,
+                  font=\small\bfseries, text width=30mm},
+    tleaf/.style={dnode, draw=grayDark!70, fill=white, font=\scriptsize,
+                  text width=34mm, minimum height=8mm},
+    tmine/.style={dnode, draw=redDark, line width=1pt, fill=flow,
+                  font=\scriptsize, text width=34mm, minimum height=8mm},
+    %
+    % --- grouping panels ---
+    panelA/.style={rounded corners=9pt, draw=blue!45,       dashed,
+                   line width=1pt, fill=panelBlue},
+    panelB/.style={rounded corners=9pt, draw=green!45!black, dashed,
+                   line width=1pt, fill=panelGreen},
+    panelC/.style={rounded corners=9pt, draw=redDark!55,     dashed,
+                   line width=1pt, fill=panelWarm},
+    %
+    % --- annotation ---
+    note/.style={font=\scriptsize, align=center, text=grayDark},
+    tag/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+    %
+    % --- legend ---
+    chip/.style={rounded corners=3pt, minimum width=.65cm,
+                 minimum height=.3cm, inner sep=0pt},
+    chiptext/.style={anchor=west, font=\scriptsize},
+    legendbox/.style={rounded corners=7pt, draw=black!12, fill=white},
+}
+
+% Numbered section badge, used to title a panel.
+% #1 stroke/fill colour, #2 node name, #3 the number, #4 anchor node,
+% #5 the title text.
+\newcommand{\panelbadge}[5]{%
+  \node[circle, draw=#1, fill=#1, text=white, minimum size=.62cm,
+        font=\small\bfseries] (#2) at ($(#4.north west)+(0.72,-0.58)$) {#3};
+  \node[anchor=west, font=\bfseries, text=#1, right=2mm of #2] {#5};
+}
+
+% A legend swatch chained to the right of the previous one.
+% #1 draw colour, #2 fill colour, #3 node name, #4 previous text node,
+% #5 label
+\newcommand{\legendchip}[5]{%
+  \node[chip, draw=#1, fill=#2, right=8mm of #4] (#3) {};
+  \node[chiptext, right=2mm of #3] (#3t) {#5};
+}
