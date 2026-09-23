@@ -3,37 +3,40 @@ import os
 import torch
 
 
+def _latest_run_checkpoint(logdir):
+    if not os.path.exists(logdir):
+        raise ValueError(f"Logdir {logdir} does not exist")
+
+    subdirs = [
+        d
+        for d in os.listdir(logdir)
+        if os.path.isdir(os.path.join(logdir, d))
+    ]
+    if not subdirs:
+        raise ValueError(f"No subdirectories found in {logdir}")
+
+    subdirs.sort()
+    ckpt_path = os.path.join(logdir, subdirs[-1], "checkpoints", "last.ckpt")
+    if not os.path.exists(ckpt_path):
+        raise ValueError(f"Checkpoint not found at {ckpt_path}")
+    print(f"Using last checkpoint from {ckpt_path}")
+    return ckpt_path
+
+
 def resolve_checkpoint(ckpt=None, last_ckpt=False, logdir="logs_nuplan"):
-    if last_ckpt:
-        if not os.path.exists(logdir):
-            raise ValueError(f"Logdir {logdir} does not exist")
-
-        subdirs = [
-            d
-            for d in os.listdir(logdir)
-            if os.path.isdir(os.path.join(logdir, d))
-        ]
-        if not subdirs:
-            raise ValueError(f"No subdirectories found in {logdir}")
-
-        subdirs.sort()
-        ckpt_path = os.path.join(logdir, subdirs[-1], "checkpoints", "last.ckpt")
-        if not os.path.exists(ckpt_path):
-            raise ValueError(f"Checkpoint not found at {ckpt_path}")
-        print(f"Using last checkpoint from {ckpt_path}")
-        return ckpt_path
-
-    if ckpt is None:
-        raise ValueError("Either ckpt must be provided or last_ckpt must be true")
+    if last_ckpt or ckpt is None:
+        return _latest_run_checkpoint(logdir)
 
     if os.path.isdir(ckpt):
-        # Accept either a run dir (logs_navsim/<run>/) or its checkpoints/ subdir.
+        # Accept a run dir (logs_navsim/<run>/) or its checkpoints/ subdir.
         for candidate in (os.path.join(ckpt, "last.ckpt"),
                           os.path.join(ckpt, "checkpoints", "last.ckpt")):
             if os.path.exists(candidate):
                 print(f"Using last checkpoint from {candidate}")
                 return candidate
-        raise ValueError(f"No last.ckpt found under {ckpt}")
+        # Otherwise treat ckpt as a logdir (logs_navsim/) holding run subdirs
+        # and use the latest one's checkpoints/last.ckpt.
+        return _latest_run_checkpoint(ckpt)
 
     if not os.path.exists(ckpt):
         raise ValueError(f"Checkpoint not found at {ckpt}")

@@ -81,9 +81,9 @@ model:
     # Episode length T is free — the model predicts every frame after the context.
     context_traj: 0                 # known-trajectory context frames; predicts T - context_traj
     context_images: 2               # image-observed context frames (independent)
-    image_tokens: 1                 # tokens the spatial block extracts per observed frame
+    image_tokens: 64                 # tokens the spatial block extracts per observed frame
     num_diffusion_steps: 50
-    num_val_samples: 20              # inference repeats per context in validation
+    num_val_samples: 100              # inference repeats per context in validation
     # raw vs encoded image input:
     #   encode_images: false -> read cached latents (data below must be latent)
     #   encode_images: true  -> read raw images, model loads the tokenizer

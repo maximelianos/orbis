@@ -41,7 +41,7 @@ RUN
         python view_episode.py
 
         # with the model's predicted trajectories on the BEV
-        python view_episode.py --ckpt logs_navsim/2026-09-21T18-00-08_config/checkpoints/last.ckpt
+        python view_episode.py --ckpt logs_navsim /2026-09-21T18-00-08_config/checkpoints/last.ckpt
 
    The token can also come from the JUPYTER_TOKEN environment variable.
 

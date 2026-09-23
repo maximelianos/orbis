@@ -233,6 +233,7 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
                        token_to_file=token_to_file, val_fraction=val_fraction)
         _EPISODES.clear()                    # states were built without predictions
 
+    print("num_val_samples:", model.num_val_samples)
     model = _VIEWER["model"]
     print(json.dumps({
         "ckpt": ckpt, "device": _VIEWER["device"], "split": split,

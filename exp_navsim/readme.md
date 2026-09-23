@@ -204,7 +204,7 @@ python -m exp_navsim.data.bev_extract  --config exp_navsim/config.yaml --num 3  
 python -m exp_navsim.draw_bev          --config exp_navsim/config.yaml --num 3   # BEV drawing smoke check -> PDF
 python train_nuplan.py -c exp_navsim/config.yaml --max_steps 20000 --logdir logs_navsim
 python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 1000
-python -m exp_navsim.test_model --config exp_navsim/config.yaml --ckpt logs_navsim/2026-08-21T14-45-31_config --num 6
+python -m exp_navsim.test_model --config exp_navsim/config.yaml --ckpt logs_navsim --num 6
 
 python -m exp_navsim.test_model --config exp_navsim/config.yaml \
     --ckpt logs_navsim/2026-08-21T14-45-31_config/checkpoints/last.ckpt --num 5

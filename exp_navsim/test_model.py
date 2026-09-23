@@ -127,8 +127,9 @@ def _attach_bev(batch, long_ds, tokens, token_to_idx):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="exp_navsim/config.yaml")
-    ap.add_argument("--ckpt", required=True,
-                    help="checkpoint file, or a run/checkpoints dir to use its last.ckpt")
+    ap.add_argument("--ckpt", default="logs_navsim",
+                    help="checkpoint file, a run/checkpoints dir to use its last.ckpt, "
+                         "or a logdir (default) to use the latest run's last.ckpt")
     ap.add_argument("--num", type=int, default=6, help="test episodes to visualize")
     ap.add_argument("--out", default="exp_navsim/navsim_predictions.pdf")
     ap.add_argument("--no-bev", action="store_true",
