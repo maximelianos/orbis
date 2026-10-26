@@ -334,6 +334,8 @@ fixed memory than to plain self-attention. A LayerNorm and a linear map project
 the final prediction stream back to two channels, which gives the velocity field
 on the predicted frames only, of shape $(B,T-c,2)$.
 Figure~\ref{fig:navsim-denoiser} shows the assembled network.
+Figure~\ref{fig:navsim-sketch} is a simpler version of the same picture, next
+to the tokenizer that produces the image latents.
 
 The configuration used here sets $D=64$ with $8$ attention heads and a
 feed-forward width of $2D$, and the stack currently holds two temporal blocks
@@ -357,6 +359,32 @@ AdaLN-Zero, and the refreshed prediction stream re-enters the key sequence at th
 next layer. A LayerNorm and a linear head emit the flow-matching velocity field
 on the predicted frames only.}
 \label{fig:navsim-denoiser}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\begin{subfigure}[t]{0.38\textwidth}
+\centering
+\includegraphics[width=\linewidth]{../diagrams/diagram-tokenizer.pdf}
+\caption{The hybrid tokenizer. The semantic and detail encoders each give an
+$18\times32$ grid with $16$ channels, and the two grids are concatenated along
+the channels.}
+\label{fig:navsim-sketch-tokenizer}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.58\textwidth}
+\centering
+\includegraphics[width=\linewidth]{../diagrams/diagram-denoiser-sketch.pdf}
+\caption{The denoiser. The spatial block turns each context frame into tokens,
+which join the noisy trajectory points in the temporal block. The diffusion
+time step comes in through AdaLN-Zero.}
+\label{fig:navsim-sketch-denoiser}
+\end{subfigure}
+\caption{Simplified view of the tokenizer and the denoiser. Only one image
+token per frame is drawn, the model uses $N$. The resolution in (a) is the one
+the world model was trained at. The probe in this section crops to
+$256\times256$ instead, which gives a $16\times16$ grid.}
+\label{fig:navsim-sketch}
 \end{figure}
 
 \subsection{Two independent contexts}

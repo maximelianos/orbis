@@ -65,25 +65,63 @@ cache:
 # Model
 # --------------------------------------------------------------------------- #
 model:
-  base_learning_rate: 5.0e-4 # 1.0e-3
+  base_learning_rate: 5.0e-4
   adjust_learning_rate: false
   precision: 16-mixed
   grad_acc_steps: 1
+  resume_traj_ae_only: false        # --resume loads only traj_ae.* and traj_norm.*
   target: exp_navsim.model.NavsimTrajectoryModel
   params:
-    hidden_dim: 64 # 32
+    hidden_dim: 16
     # Channels of ONE stage-1 tokenizer latent. The aggregator reads both cached
     # latents (q_sem and q_rec concatenated), so its input is twice this.
     image_encoder_channels: 16
     sigma_min: 1.0e-5
     warmup_steps: 0
     min_lr_multiplier: 0.1
-    # Episode length T is free — the model predicts every frame after the context.
-    context_traj: 0                 # known-trajectory context frames; predicts T - context_traj
-    context_images: 2               # image-observed context frames (independent)
+    # Episode length T is free; the model predicts the whole trajectory.
+    context_images: 2               # image-observed context frames
     image_tokens: 64                 # tokens the spatial block extracts per observed frame
-    num_diffusion_steps: 50
-    num_val_samples: 100              # inference repeats per context in validation
+    ff_dim: 32                       # feed-forward width in the spatial and denoiser blocks
+    num_heads: 2
+    num_diffusion_steps: 10         # inference diffusion steps
+    num_val_samples: 50              # inference repeats per context in validation
+    # Future frames after frame 0 that are predicted, trained and scored
+    # (8 = 4 s at 2 Hz). null = the whole episode.
+    max_pred_len: 8
+
+    # What the denoiser predicts (z):
+    #   vae  -> latent of the trajectory autoencoder, block traj_ae
+    #   poly -> polynomial coefficients of the positions, block traj_poly
+    #   pure -> the normalized velocity of every frame, block traj_pure
+    trajectory: vae
+
+    # Trajectory autoencoder (exp_navsim/trajectory_ae.py), trained jointly.
+    traj_ae:
+      hidden_dim: 16
+      latent_dim: 4                  # size of z
+      enc_layers: 2                  # transformer layers in the encoder
+      dec_blocks: 3                  # FiLM MLP blocks in the decoder
+      kl_weight: 1.0e-3              # VAE KL to N(0, 1)
+      pos_weight: 1.0                # weight of the cumulative (position) error
+
+    # Polynomial fit (exp_navsim/trajectory_repr.py), no trainable weights.
+    traj_poly:
+      order: 2                       # z has 2 * order coefficients (x and y)
+      time_scale: 10.0               # frames per unit of the polynomial's time
+
+    # Raw trajectory (exp_navsim/trajectory_repr.py): z has 2 * max_frames entries.
+    traj_pure:
+      max_frames: 64                 # longest episode the model can predict
+
+    # Training-time perturbation of the image latents against memorization
+    # (exp_navsim/regularization.py). Off in validation and sampling. Set a
+    # value to 0 to disable that part.
+    regularization:
+      cond_dropout: 0.              # zero a sample's whole image input
+      mask_ratio: 0.               # zero this fraction of the H x W cells per frame
+      noise_std: 0.                 # Gaussian noise, relative to each channel's std
+    
     # raw vs encoded image input:
     #   encode_images: false -> read cached latents (data below must be latent)
     #   encode_images: true  -> read raw images, model loads the tokenizer
@@ -129,6 +167,11 @@ data:
             val_fraction: 0.1
             latent_key: encoded_q_sem
             deterministic: false
+            # Random start: each draw takes the images and trajectory from a
+            # random frame to the end of the episode, keeping >= this many frames
+            # (12 = 6 s at 2 Hz). 0 = always start at frame 0. Training only;
+            # validation is deterministic and always starts at 0.
+            random_start_min_frames: 12
 
     validation:
       target: exp_navsim.data.latent_dataset.NavsimLatentDataset
@@ -137,7 +180,7 @@ data:
         #cache_dir: data/navsim_latents  # navhard
         num_frames: 0                # 0 = the whole episode (padded per batch)
         context_images: 2            # keep = model.context_images
-        split: val
+        split: train
         val_fraction: 0.1
         latent_key: encoded_q_sem
         deterministic: true          # fixed windows -> same test episodes each time

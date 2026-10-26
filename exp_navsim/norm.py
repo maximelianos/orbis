@@ -14,14 +14,15 @@ import torch.nn as nn
 class TrajectoryNorm(nn.Module):
     """Per-channel (dx, dy) velocity normalizer with EMA-tracked statistics."""
 
-    def __init__(self, decay=0.999, eps=1e-8):
+    def __init__(self, decay=0.999, eps=1e-8, dim=2):
+        """dim: number of channels; 2 for (dx, dy), more for other per-sample codes."""
         super().__init__()
         self.decay = decay
         self.eps = eps
 
         # requires_grad=False: part of the state_dict, never touched by the optimizer
-        self.mean = nn.Parameter(torch.zeros(2), requires_grad=False)
-        self.var = nn.Parameter(torch.ones(2), requires_grad=False)
+        self.mean = nn.Parameter(torch.zeros(dim), requires_grad=False)
+        self.var = nn.Parameter(torch.ones(dim), requires_grad=False)
         self.initialized = nn.Parameter(torch.zeros(1, dtype=torch.bool), requires_grad=False)
 
     @torch.no_grad()
@@ -34,8 +35,9 @@ class TrajectoryNorm(nn.Module):
         """
         # reduce all but the channel dim
         if mask is None:
-            batch_mean = velocity.mean(dim=(0, 1))
-            batch_var = velocity.var(dim=(0, 1), unbiased=False)
+            flat = velocity.reshape(-1, velocity.shape[-1])
+            batch_mean = flat.mean(dim=0)
+            batch_var = flat.var(dim=0, unbiased=False)
         else:
             w = mask.to(velocity.dtype).unsqueeze(-1)              # (B, T, 1)
             count = w.sum().clamp(min=1.0)

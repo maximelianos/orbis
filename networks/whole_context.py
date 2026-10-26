@@ -12,7 +12,7 @@ import torch.nn as nn
 import pytorch_lightning as pl
 
 from .pos_emb import PositionEmbedding1d
-from .blocks import TemporalBlock, SpatialBlock
+from .blocks import AdaLNSingle, TemporalBlock, SpatialBlock
 from .norm import TrajectoryNorm
 
 
@@ -146,6 +146,8 @@ class DiffusionModel(pl.LightningModule):
             nn.Linear(D, D),
         )
         
+        # One AdaLN modulation of the diffusion time, shared by the whole stack
+        self.adaLN = AdaLNSingle(D, D)
         self.temporal_stack = nn.ModuleList([
             TemporalBlock(D, D*2),
             TemporalBlock(D, D*2),
@@ -277,9 +279,10 @@ class DiffusionModel(pl.LightningModule):
         assert pred.shape == (B, self.pred_steps, D)
         
         # Cross-attention denoiser
+        modulation = self.adaLN(flow_time)  # (B, 8D)
         for transformer_block in self.temporal_stack:
             inp = torch.cat([context, pred], dim=1)
-            pred = transformer_block(inp, pred, flow_time)
+            pred = transformer_block(inp, pred, modulation)
         pred_flow = pred  # (B, T_pred, hidden_dim)
         
         # hidden_dim -> (x, y)

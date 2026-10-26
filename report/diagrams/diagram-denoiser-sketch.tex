@@ -1,0 +1,86 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+\usetikzlibrary{patterns}
+
+\begin{document}
+\begin{tikzpicture}[
+    frame/.style={dnode, draw=orange!65!black, fill=latent,
+                  minimum width=13mm, minimum height=10mm, font=\normalsize},
+    spatial/.style={trapezium, trapezium left angle=62, trapezium right angle=62,
+                    draw=blue!60!black, fill=attention, line width=0.8pt,
+                    minimum width=15mm, minimum height=7mm, inner sep=1pt,
+                    trapezium stretches body},
+    token/.style={rectangle, draw=grayDark, line width=0.8pt,
+                  minimum size=5.5mm, inner sep=0pt},
+    imgtok/.style={token, fill=attention},
+    % hatch as the main fill, so the border is stroked on top of it
+    noisytok/.style={token, preaction={fill=flow},
+                     pattern=north east lines, pattern color=redDark!70},
+    outtok/.style={token, fill=detail},
+]
+
+% ------------------------------------------------------------
+% grid: every column is one x value, every row one y value, so
+% frames, spatial blocks and tokens stack exactly on top of each
+% other and all tokens of one kind share a baseline.
+% ------------------------------------------------------------
+\def\colA{0}      % frame x_0
+\def\colB{2.3}    % frame x_1
+\def\sep{3.75}    % dashed separator
+\def\colP{5.2}    % p_2
+\def\dP{1.6}      % spacing between trajectory tokens
+\def\rowX{0}      % image latents
+\def\rowS{1.15}   % spatial blocks
+\def\rowT{2.1}    % tokens entering the temporal block
+\def\rowB{3.5}    % temporal block
+\def\rowO{4.55}   % output velocities
+
+% ============ context image latents ============
+\foreach \c/\i in {\colA/0, \colB/1} {
+    \node[frame]   (X\i) at (\c,\rowX) {$\mathbf{x}_{\i}$};
+    \node[spatial] (S\i) at (\c,\rowS) {\strut};
+    \node[imgtok]  (I\i) at (\c,\rowT) {};
+}
+\node[font=\small, align=center, anchor=east] at ($(S0.west)+(-2mm,0)$)
+    {Spatial\\Block};
+
+% ============ driving trajectory ============
+\foreach \k in {2,3,4} {
+    \pgfmathsetmacro{\px}{\colP+(\k-2)*\dP}
+    \node[noisytok] (P\k) at (\px,\rowT) {};
+    \node[font=\normalsize, below=1.5mm of P\k] (Pl\k) {$p_{\k}^{\tau}$};
+    \node[outtok]   (O\k) at (\px,\rowO) {};
+}
+
+\node[attn, minimum height=9mm, font=\normalsize,
+      minimum width={2*\dP cm + 15mm}] (TB) at ($(P3 |- 0,\rowB)$) {Temporal Block};
+
+\node[font=\normalsize, anchor=west] at ($(O4.east)+(3mm,0)$) {$v(p^{\tau})$};
+
+% ============ separator, drawn first so the image arrow hops it ============
+\draw[dashed, line width=0.8pt, grayDark!70]
+    (\sep, {\rowX-1.2}) -- (\sep, {\rowO+0.5});
+
+% ============ image tokens -> temporal block ============
+% both tokens rise to a common bar; the bar's midpoint feeds the
+% block from the left, at the block's own centre height
+\coordinate (bar) at (0,{\rowT+0.6});
+\coordinate (barMid) at ($(I0 |- bar)!0.5!(I1 |- bar)$);
+\draw[plainline] (I0.north) -- (I0 |- bar) -- (I1 |- bar) -- (I1.north);
+\draw[arrow, hop] (barMid) -- (barMid |- TB.west) -- (TB.west);
+
+% ============ diffusion time step -> AdaLN-Zero ============
+\node[cond, anchor=west, font=\small] (tau) at ($(P4.east |- 0,\rowT)+(12mm,0)$)
+    {diffusion\\time step $\tau$};
+\draw[arrow] (tau.north) -- (tau.north |- TB.east)
+    node[tag, pos=0.5, anchor=west, xshift=1mm, text=purpleDark] {AdaLN-Zero}
+    -- (TB.east);
+
+% ============ region labels ============
+\node[font=\small, align=center, anchor=north] (lblL)
+    at ($(X0.south)!0.5!(X1.south)+(0,-4mm)$) {Context image latents};
+\node[font=\small, anchor=north] (lblR)
+    at (P3 |- lblL.north) {Driving trajectory};
+
+\end{tikzpicture}
+\end{document}

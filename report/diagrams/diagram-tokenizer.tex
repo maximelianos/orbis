@@ -1,0 +1,45 @@
+\documentclass[tikz,border=8pt]{standalone}
+\input{diagramstyle}
+
+\begin{document}
+\begin{tikzpicture}[
+    tok/.style={dnode, minimum width=14mm, minimum height=11mm, font=\normalsize},
+    catop/.style={circle, draw=grayDark, fill=white, inner sep=0pt,
+                  minimum size=6mm, font=\small},
+]
+
+% ============ every node sits on an explicit grid, so the two
+% branches are mirror images about the row of I ============
+\node[io, minimum width=14mm, minimum height=11mm, font=\normalsize]
+    (I) at (0,0) {$\mathbf{I}$};
+\node[note, below=1.5mm of I] (Ilbl) {image\\$288\times512\times3$};
+
+\node[tok, draw=purpleDark, fill=semantic] (xs) at (4.0, 1.25) {$\mathbf{x}_s$};
+\node[tok, draw=greenDark,  fill=detail]   (xd) at (4.0,-1.25) {$\mathbf{x}_d$};
+\node[note, above=1.5mm of xs] {$18\times32\times16$};
+\node[note, below=1.5mm of xd] {$18\times32\times16$\\continuous tokens};
+
+\node[catop] (cat) at (6.1,0) {$\|$};
+\node[tok, draw=orange!65!black, fill=latent] (x) at (7.9,0) {$\mathbf{x}$};
+\node[note, below=1.5mm of x] {concatenated\\$18\times32\times32$};
+
+% ============ fan out: one stem, then two mirrored elbows ============
+\coordinate (split) at (1.35,0);
+\node[junction] at (split) {};
+\draw[plainline] (I.east) -- (split);
+\draw[arrow] (split) |- (xs.west)
+    node[tag, pos=0.75, above=0.5mm] {$\mathcal{E}_s$};
+\draw[arrow] (split) |- (xd.west)
+    node[tag, pos=0.75, below=0.5mm] {$\mathcal{E}_d$};
+
+% ============ merge: mirrored elbows into the concat node ============
+\draw[arrow] (xs.east) -| (cat.north);
+\draw[arrow] (xd.east) -| (cat.south);
+\draw[arrow] (cat.east) -- (x.west);
+
+% ============ title ============
+\node[font=\bfseries, text=blueDark, anchor=south]
+    at ($(xs.north)+(0,0.75)$) {Hybrid image tokenizer};
+
+\end{tikzpicture}
+\end{document}

@@ -24,6 +24,7 @@ def _latest_run_checkpoint(logdir):
 
 
 def resolve_checkpoint(ckpt=None, last_ckpt=False, logdir="logs_nuplan"):
+    # ckpt: "logs_navsim", "logs_navsim/<run>/", or the checkpoints/ subdir
     if last_ckpt or ckpt is None:
         return _latest_run_checkpoint(logdir)
 

@@ -46,6 +46,11 @@ class Encoder:
         """
         assert x.dim() == 4, f"Expected input of shape (B, C, H, W), got {x.shape}"
         with torch.autocast(dtype=torch.float16, device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
+            # self.tokenizer is a VQModelIF (dual-branch VQGAN, see models/first_stage/vqgan.py:391).
+            # encoded is a dict with keys "continuous", "quantized", "indices" (each a
+            # (rec, sem) tuple from the two encoder branches), plus "quantization_loss"
+            # and "entropy_loss" (scalars, entropy_loss is None in eval mode). Only the
+            # pre-quantization continuous latents are used here.
             encoded = self.tokenizer.encode(x.to(self.device))
             continuous_latents = encoded["continuous"]
             

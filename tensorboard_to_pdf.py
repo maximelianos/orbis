@@ -2,7 +2,7 @@
 """
 Export TensorBoard logs to a PDF report.
 
-python tensorboard_to_pdf.py --logdir ./logs_navsim --last --name navtrain.pdf --from 1000
+python tensorboard_to_pdf.py --logdir ./logs_train --last --from 1000
 
 Dependencies:
     pip install tensorboard matplotlib reportlab
@@ -10,6 +10,7 @@ Dependencies:
 
 import argparse
 import os
+import shutil
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -380,14 +381,14 @@ def main():
     print(f"Loading events from: {args.logdir}")
     runs, step_times = load_events(args.logdir, args.tags)
 
-    tmp_dir = Path("/tmp/tb_pdf_charts")
+    tmp_dir = Path(args.logdir) / "tb_pdf_charts"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    output = dt.datetime.now().strftime(f"log_%y%m%d_{args.name}")
+    output = str(Path(args.logdir) / dt.datetime.now().strftime(f"log_%y%m%d_{args.name}"))
     print(f"Generating PDF: {output}")
     build_pdf(runs, step_times, output, args.logdir, args.max_steps, tmp_dir, args.from_step)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
     print(f"Done! Report saved to: {output}")
-
 
 if __name__ == "__main__":
     main()

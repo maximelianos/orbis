@@ -16,7 +16,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from networks.pos_emb import PositionEmbedding1d
-from networks.blocks import TemporalBlock
+from networks.blocks import AdaLNSingle, TemporalBlock
 
 class DiffusionModel(pl.LightningModule):
     """
@@ -83,6 +83,8 @@ class DiffusionModel(pl.LightningModule):
         #     embed_dim=hidden_dim,
         #     ff_dim=hidden_dim*2,
         # )
+        # One AdaLN modulation of the diffusion time, shared by the whole stack
+        self.adaLN = AdaLNSingle(time_embed_dim, hidden_dim)
         self.cross_denoiser = nn.ModuleList([
             TemporalBlock(embed_dim=hidden_dim, ff_dim=hidden_dim*2),
             TemporalBlock(embed_dim=hidden_dim, ff_dim=hidden_dim*2),
@@ -157,8 +159,9 @@ class DiffusionModel(pl.LightningModule):
         
         # Cross-attention cross denoiser
         pred_flow = features
+        modulation = self.adaLN(fm_emb)  # (B, 8 * hidden_dim)
         for layer in self.cross_denoiser:
-            pred_flow = layer(pred_flow, pred_flow, fm_emb)  # (B, T, hidden_dim)
+            pred_flow = layer(pred_flow, pred_flow, modulation)  # (B, T, hidden_dim)
         #pred_flow = self.cross_denoiser(features, features, fm_emb)  # (B, T, hidden_dim)
         
         # hidden_dim -> (x, y)

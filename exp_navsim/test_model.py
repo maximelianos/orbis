@@ -16,6 +16,7 @@ drawn on it (exp_navsim/data/bev_extract.py + exp_navsim/draw_bev.py). Pass
 """
 
 import argparse
+from pathlib import Path
 
 import h5py
 from tqdm import tqdm
@@ -131,7 +132,7 @@ def main():
                     help="checkpoint file, a run/checkpoints dir to use its last.ckpt, "
                          "or a logdir (default) to use the latest run's last.ckpt")
     ap.add_argument("--num", type=int, default=6, help="test episodes to visualize")
-    ap.add_argument("--out", default="exp_navsim/navsim_predictions.pdf")
+    ap.add_argument("--out", default=None)
     ap.add_argument("--no-bev", action="store_true",
                     help="skip the map-BEV panel (needs navsim + nuPlan maps)")
     args = ap.parse_args()
@@ -146,7 +147,9 @@ def main():
     # both exp_navsim/config.yaml (NavsimTrajectoryModel) and
     # exp_navsim/wm/config.yaml (WmTrajectoryModel).
     ckpt_path = resolve_checkpoint(ckpt=args.ckpt)
-    model = get_obj_from_str(cfg.model.target).load_from_checkpoint(ckpt_path, map_location=device)
+    print("loading checkpoint", ckpt_path)
+    model = get_obj_from_str(cfg.model.target).load_from_checkpoint(ckpt_path, map_location=device,
+                                                                  weights_only=False)
     model = model.to(device).eval()
 
     # Fixed test episodes: evenly spaced across the filtered validation set.
@@ -173,15 +176,17 @@ def main():
     # N samples of the same context -> (B, N, T, 2) for the drawing overlay.
     print("predict")
     N = model.num_val_samples
-    preds = torch.stack([model.sample(batch) for _ in range(N)], dim=1)  # (B, N, T, 2)
+    preds = torch.stack([model.sample(batch, num_diffusion_steps=10) for _ in range(N)], dim=1)  # (B, N, T, 2)
     batch["pred_trajectories"] = preds
 
     print("save pdf")
-    with PdfPages(args.out) as pdf:
+    run_dir = Path(ckpt_path).resolve().parent.parent       # <run_dir>/checkpoints/<name>.ckpt
+    pdf_path = Path(args.out) if args.out else run_dir / "test_trajectories.pdf"
+    with PdfPages(pdf_path) as pdf:
         for i in tqdm(range(n)):
             fig = _page(batch, i)
             pdf.savefig(fig, dpi=120, bbox_inches="tight"); plt.close(fig)
-    print(f"Saved {args.out}")
+    print(f"Saved {pdf_path}")
 
 
 def _page(batch, i):

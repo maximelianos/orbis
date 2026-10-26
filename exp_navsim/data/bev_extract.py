@@ -16,8 +16,9 @@ Coordinate frames (the reason the anchor frame matters)
   `add_map_to_bev_ax` using the anchor's global pose. x is forward, y is left.
 * `NavsimLongBase` builds `batch["trajectory"]` with `poses_to_local_traj`, i.e.
   local to **episode frame 0** (both origin and heading). The windowed datasets
-  re-origin with `traj - traj[0]`, which is a pure translation, so the trajectory
-  is heading-aligned to frame 0 only when the window starts at 0.
+  move a window that starts at frame s > 0 into the ego frame of s (origin and
+  an estimated heading, see `_window_traj` in latent_dataset.py), so a batch
+  trajectory is local to its window's first frame.
 
 So with the default `anchor=0` — which is what the deterministic validation
 windows (`deterministic: true` -> start 0) and `test_model.py` use — the batch

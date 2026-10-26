@@ -117,7 +117,7 @@ SETTINGS = {
     # on. Use "val" to judge the model on episodes it has never seen.
     "split": "val",
     "total_len": 20,                    # model window: context + predicted frames
-    "samples": 0,                       # 0 = the model's num_val_samples
+    "samples": 50,                       # 0 = the model's num_val_samples
 
     # --- rendering ---
     "cameras": "front",                 # "front" | "surround"

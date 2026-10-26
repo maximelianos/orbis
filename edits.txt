@@ -442,4 +442,41 @@ DINO enc instead of orbis enc
 loss imbalance for short/long episodes?
 Add augmentation with random windows 
 
-scored_mask remove comment
+scored_mask remove 
+
+
+### 25.09.2026
+
+fix part of trajectory, diffuse the rest. no retraining
+
+### 08.10.2026
+Testing the internal representation of world models with an attentive diffusion probe for ego vehicle trajectory prediction
+
+Done:
+- decrease model size: hidden_dim=16, total params=60 000
+  - increase number of image tokens per frame to 64
+  - unified adaln-zero; remove adaln from spatial block
+  - added a VAE for trajectories. Predicting 4-dim latent instead of whole trajectory
+
+Ideas:
+- A controlled synthetic study
+- Compare latents from DINO, v Jepa, Orbis encoder q_sem, q_rec, Orbis WM. 
+  Compare training on latents from different blocks of world model (4 different blocks). Make a graph of performance vs block index.
+- (technical) Decrease planning horizon, prevent memorization
+
+- Compute EPDMS and its components, compare with other planners
+- per-episoded best and average. 
+- std for all encoders
+
+- Check cross-dataset generalization: navsim train -> navsim test
+- (technical) cache world model latents for faster training
+
+- Check compositional generalization
+- ? Better Evaluation Metric ?
+
+- compare trajectory representations: raw 2D, VAE, polynomial
+
+
+### 14.10.2026
+
+- Training on WM latents gives much lower FM loss, compared to q_sem+q_rec

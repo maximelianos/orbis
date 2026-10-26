@@ -14,8 +14,9 @@ Usage:
     python train_nuplan.py --config configs/nuplan.yaml --max_steps 5000
     python evaluate/test_nuplan.py --config configs/nuplan.yaml --last_ckpt --logdir logs_nuplan --num_samples 10
     
-    # Resume training
-    python train_nuplan.py --config configs/nuplan.yaml --resume logs/trajectory_model/checkpoints/last.ckpt
+    # Resume training (bare --resume = latest run in --logdir; a run dir also works)
+    python train_nuplan.py --config configs/nuplan.yaml --resume
+    python train_nuplan.py --config configs/nuplan.yaml --resume logs_nuplan/<run>
     
     # Test only
     python train_nuplan.py --config configs/nuplan.yaml --test
@@ -36,6 +37,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.strategies import DDPStrategy
 
 from util import instantiate_from_config
+from evaluate.checkpoint import resolve_checkpoint
 
 
 logging.basicConfig(
@@ -60,8 +62,12 @@ def get_parser(**parser_kwargs):
     parser.add_argument(
         "-r", "--resume",
         type=str,
+        nargs="?",
+        const="",
         default=None,
-        help="path to checkpoint to resume from",
+        help="checkpoint to resume from: a .ckpt file, a run dir or its checkpoints/ "
+             "subdir (uses last.ckpt), or a logdir (uses the latest run's last.ckpt). "
+             "Bare --resume uses the latest run in --logdir",
     )
     
     parser.add_argument(
@@ -126,7 +132,12 @@ if __name__ == "__main__":
     # Parse arguments
     parser = get_parser()
     opt = parser.parse_args()
-    
+
+    # Resolve before the new run dir is created, otherwise "latest run" would
+    # pick the fresh empty one.
+    if opt.resume is not None:
+        opt.resume = resolve_checkpoint(ckpt=opt.resume or None, logdir=opt.logdir)
+
     # Set random seed
     seed_everything(opt.seed, workers=True)
     
@@ -228,6 +239,15 @@ if __name__ == "__main__":
     
     trainer = Trainer(**trainer_kwargs)
     
+    # With model.resume_traj_ae_only, --resume only copies the trajectory AE (and the
+    # velocity normalization it was trained with); everything else starts fresh.
+    if opt.resume is not None and config.model.resume_traj_ae_only:
+        state = torch.load(opt.resume, map_location="cpu", weights_only=False)["state_dict"]
+        state = {k: v for k, v in state.items() if k.startswith(("traj_ae.", "traj_norm."))}
+        model.load_state_dict(state, strict=False)
+        logger.info("Loaded %d traj AE tensors from %s", len(state), opt.resume)
+        opt.resume = None
+
     # Run training or testing
     if opt.test:
         logger.info("Running test only")

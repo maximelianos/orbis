@@ -220,7 +220,8 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
         _dataset()                           # binds cfg + cache to this config first
         device = "cuda" if torch.cuda.is_available() else "cpu"
         ckpt_path = resolve_checkpoint(ckpt=ckpt)
-        model = NavsimTrajectoryModel.load_from_checkpoint(ckpt_path, map_location=device)
+        model = NavsimTrajectoryModel.load_from_checkpoint(ckpt_path, map_location=device,
+                                                          weights_only=False)
         if model.encode_images:
             raise RuntimeError("viewer supports encoded mode only (model.encode_images is set)")
 
