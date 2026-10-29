@@ -1,562 +1,121 @@
-\section{Related Work}
+\section{Background and Related Work}
 \label{sec:related}
 
-The project sits at the intersection of four lines of research:
-\emph{generative modelling} through diffusion and flow matching, the
-\emph{diffusion transformer} architecture that has become the workhorse of
-modern generative models, \emph{world models} for autonomous driving and
-navigation, and the \emph{trajectory planners} that produce the same kind of
-output as our probe. Figure~\ref{fig:taxonomy} organizes the generative and
-world-model works along the first three axes. We then treat each line in turn:
-Section~\ref{sec:diffusion-theory} develops the theory of diffusion and flow
-matching, Section~\ref{sec:dit} describes the diffusion transformer,
-Section~\ref{sec:world-models} reviews world models from the general concept
-through to the driving and navigation models that motivate our probe, and
-Section~\ref{sec:planners} goes through the planning literature, from classical
-rule-based methods to learned end-to-end and world-model-based ones, and says
-where the probe sits among them.
+\subsection{The Orbis world model}
+\label{sec:orbis}
+
+Orbis~\cite{orbis} predicts future front-camera frames from past ones. It is
+trained on about 280 hours of raw driving video, with no labels, maps or depth.
+Whatever its features know about driving was learned from the prediction
+objective alone. The model has two stages (Figure~\ref{fig:orbis}).
+
+The first stage is an image tokenizer. It compresses a frame by a factor of 16 in
+each dimension into two latent maps: a semantic latent $q_{\text{sem}}$, trained
+to stay close to DINOv2 features, and a detail latent $q_{\text{rec}}$ for the
+appearance that the decoder needs. Both have 16 channels.
+
+The second stage is the world model itself, a spatio-temporal diffusion
+transformer with 24 blocks and about 470M parameters. It takes the latents of
+the context frames plus a noisy latent for the next frame, and predicts the
+flow-matching velocity that denoises the next frame. Each block mixes tokens
+within a frame and across frames. We probe both stages: the tokenizer latents and
+the tokens inside the world model after a given block.
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=\textwidth,height=0.46\textheight,keepaspectratio]{../diagrams/diagram-taxonomy.pdf}
-\caption{A taxonomy of the works reviewed in this section. Driving world models
-can be sorted by their \emph{generative objective} (continuous diffusion or flow
-matching against discrete masked-token modelling), by their \emph{architecture}
-(convolutional U-Net against transformer-based DiT variants), and by their
-\emph{role} (open-world driving generation, navigation planning, or game and
-simulator emulation). The dashed red edges mark that Orbis combines a
-flow-matching objective with a spatio-temporal diffusion transformer.}
-\label{fig:taxonomy}
+\includegraphics[width=\textwidth,height=0.36\textheight,keepaspectratio]{../diagrams/diagram-orbis.pdf}
+\caption{The two-stage Orbis model. Stage 1 is the tokenizer with a
+DINOv2-regularized semantic branch and a detail branch. Stage 2 is a
+spatio-temporal diffusion transformer that predicts the next-frame latent
+$\hat{\mathbf{x}}_N$ from the context latents. We read features from both
+stages.}
+\label{fig:orbis}
 \end{figure}
 
-\subsection{Diffusion and flow matching}
-\label{sec:diffusion-theory}
+\subsection{Flow matching}
+\label{sec:flow-matching}
 
-\paragraph{Denoising diffusion probabilistic models.}
-Diffusion models~\cite{ho_ddpm} define a generative process by reversing a
-fixed forward process that gradually corrupts data into noise. Given a data
-sample $\mathbf{x}_0$, the forward process produces a sequence of increasingly
-noisy variables $\mathbf{x}_1,\dots,\mathbf{x}_T$ according to a Gaussian
-transition with a predefined variance schedule $\{\alpha_t\}$. A convenient
-property is that any noise level can be sampled in closed form,
-\begin{equation}
-\mathbf{x}_t = \sqrt{\bar{\alpha}_t}\,\mathbf{x}_0
-+ \sqrt{1-\bar{\alpha}_t}\,\boldsymbol{\epsilon},
-\qquad \boldsymbol{\epsilon}\sim\mathcal{N}(0,I),
-\end{equation}
-where $\bar{\alpha}_t=\prod_{s\le t}\alpha_s$. The model learns the reverse
-process $p_\theta(\mathbf{x}_{t-1}\mid\mathbf{x}_t)$, which gradually denoises a
-pure-noise sample back to data. Training reduces to a simple regression in
-which a network $\boldsymbol{\epsilon}_\theta$ predicts the noise that was added,
-\begin{equation}
-\mathcal{L}_{\text{simple}}(\theta)
-= \mathbb{E}_{t,\mathbf{x}_0,\boldsymbol{\epsilon}}
-\big[\,\lVert \boldsymbol{\epsilon}_\theta(\mathbf{x}_t,t)
-- \boldsymbol{\epsilon} \rVert_2^2\,\big].
-\end{equation}
-New samples come from initializing $\mathbf{x}_T\sim\mathcal{N}(0,I)$ and
-iterating the learned reverse transitions. For conditional generation the
-standard mechanism is \emph{classifier-free guidance}~\cite{ho_ddpm}. The model
-is trained both with and without the conditioning $c$, the latter by dropping $c$
-for a learned null embedding, and at sampling time the two predictions are
-extrapolated,
-$\hat{\boldsymbol{\epsilon}}(\mathbf{x}_t,c)
-=\boldsymbol{\epsilon}_\theta(\mathbf{x}_t,\varnothing)
-+ s\big(\boldsymbol{\epsilon}_\theta(\mathbf{x}_t,c)
--\boldsymbol{\epsilon}_\theta(\mathbf{x}_t,\varnothing)\big)$,
-with guidance scale $s>1$ trading diversity for fidelity to the condition.
-
-\paragraph{Flow matching.}
-Flow matching~\cite{lipman_fm} reframes generation as learning a continuous
-\emph{velocity field} that transports a simple prior distribution to the data
-distribution along a probability path, rather than reversing a discrete
-noising chain. The simplest and most widely used instance defines a linear
-(``rectified'') path between a data point $\mathbf{x}$ and a noise sample
-$\boldsymbol{\epsilon}$,
+Both Orbis and our probe are flow-matching models~\cite{lipman_fm}, a close
+relative of diffusion models~\cite{ho_ddpm}. A sample $\mathbf{x}$ from the data
+is mixed with Gaussian noise $\boldsymbol{\epsilon}$ along a straight line,
 \begin{equation}
 \mathbf{x}^{\tau} = (1-\tau)\,\mathbf{x} + \tau\,\boldsymbol{\epsilon},
 \qquad \tau\in[0,1],
+\label{eq:fm-path}
 \end{equation}
-whose time-derivative is the constant target velocity
-$\tfrac{d\mathbf{x}^{\tau}}{d\tau}=\boldsymbol{\epsilon}-\mathbf{x}$. The model
-$\mathbf{v}_\theta$ is trained to regress this velocity,
+and a network $\mathbf{v}_\theta$ learns the velocity of this path given a
+condition $\mathbf{c}$:
 \begin{equation}
-\mathcal{L}_{\text{FM}}(\theta)
-= \mathbb{E}_{\tau,\mathbf{x},\boldsymbol{\epsilon}}
-\big[\,\lVert \mathbf{v}_\theta(\mathbf{x}^{\tau},\tau)
-- (\boldsymbol{\epsilon}-\mathbf{x}) \rVert_2^2\,\big],
+\mathcal{L} = \mathbb{E}_{\mathbf{x},\mathbf{c},\tau,\boldsymbol{\epsilon}}
+\big\lVert \mathbf{v}_\theta(\mathbf{x}^{\tau},\tau,\mathbf{c})
+- (\boldsymbol{\epsilon}-\mathbf{x}) \big\rVert^2 .
 \label{eq:fm-loss}
 \end{equation}
-and samples come from integrating the ordinary differential equation
-$\tfrac{d\mathbf{x}^{\tau}}{d\tau}=\mathbf{v}_\theta(\mathbf{x}^{\tau},\tau)$
-from the prior at $\tau=1$ back to the data manifold at $\tau=0$. Flow matching
-can be read as a continuous-time generalization of diffusion. The denoising
-intuition is the same, but the transport paths are straighter, so fewer
-integration steps are needed and training tends to be more stable. This is the
-objective Orbis uses for its continuous world model
-(Equations~\eqref{eq:fm-forward-intro} and~\eqref{eq:fm-loss-intro}), and it
-suits the trajectory head of our probe as well, since the 2D trajectory space is
-low-dimensional and benefits from the short sampling schedules flow matching
-allows.
+To sample, we draw $\boldsymbol{\epsilon}$ and integrate
+$d\mathbf{x}^\tau/d\tau=\mathbf{v}_\theta$ from $\tau=1$ to $\tau=0$ with a few
+Euler steps.
 
-\paragraph{Continuous vs.\ discrete generation.}
-One design axis keeps coming back, and Orbis makes it explicit: whether to model
-a continuous latent, with diffusion or flow matching, or a discrete sequence of
-codebook tokens, with autoregressive or masked generative
-modelling~\cite{maskgit}. Discrete token models inherit the machinery of large
-language models and look attractive for long rollouts. On driving video, though,
-Orbis finds the continuous flow-matching formulation less brittle to design
-choices and much better over long horizons. Both families need a (VQ-)VAE-style
-tokenizer~\cite{vqgan} to map pixels to a compact latent, and the hybrid Orbis
-tokenizer supports both at once.
+One property matters later. At $\tau=1$ the input is pure noise, so the best
+the network can predict is
+$\mathbf{v}^\ast(\boldsymbol{\epsilon},1,\mathbf{c}) =
+\boldsymbol{\epsilon}-\mathbb{E}[\mathbf{x}\mid\mathbf{c}]$. A single Euler step
+from $\tau=1$ to $0$ therefore lands every sample on the conditional mean
+$\mathbb{E}[\mathbf{x}\mid\mathbf{c}]$, whatever the noise. With few steps a
+flow model looks unimodal even if it has learned a multimodal distribution.
 
-\subsection{The diffusion transformer}
-\label{sec:dit}
+\subsection{Memorization in diffusion models}
+\label{sec:memorization}
 
-Early diffusion models used convolutional U-Net backbones. The Diffusion
-Transformer (DiT)~\cite{dit} showed that the U-Net inductive bias is not
-essential. A standard transformer working on latent patches matches or beats
-U-Nets, and it \emph{scales} predictably: sample quality (FID) improves smoothly
-as the model's compute in Gflops goes up, whether that comes from depth, width or
-token count. DiT works in the latent space of a pretrained VAE. The spatial
-latent is ``patchified'' into a sequence of tokens, run through a stack of
-transformer blocks, and decoded back into a noise and covariance prediction. The
-main design question is how to inject the conditioning, which is the diffusion
-timestep $t$ and any class or context signal $c$. Of the three candidates,
-in-context tokens, cross-attention and adaptive layer normalization (AdaLN), the
-\emph{adaLN-Zero} variant works best. The conditioning vector regresses per-block
-scale and shift parameters $(\gamma,\beta)$ for the layer norms plus an extra
-residual scale $\alpha$, zero-initialized so each block starts out as the
-identity. This is the mechanism Orbis uses to inject the diffusion time and the
-optional ego-motion signal, and it is also the cheapest of the three.
+A diffusion model trained to its global optimum on a finite training set
+reproduces the training samples. Real models usually generalize anyway. Bonnaire
+et al.~\cite{bonnaire} explain this with two time scales: the model reaches good
+samples after a training time $\tau_{\text{gen}}$ that does not depend on the
+dataset size $n$, and starts to memorize after $\tau_{\text{mem}}\propto n$.
+Between the two there is a window of generalization that grows with the data.
+Favero et al.~\cite{favero} observe the same linear law across image and
+language diffusion models and propose early stopping that scales with $n$. Our
+probe is a conditional diffusion model on a small target, so we can test this law
+directly on driving data (Section~\ref{sec:scaling}).
 
-Figure~\ref{fig:dit} sketches the block. A token sequence comes in, AdaLN
-modulates a multi-head self-attention sub-layer and then a feed-forward sub-layer,
-and residual connections scaled by $\alpha$ wrap both. Stack $N$ of these blocks,
-condition every one on $(t,c)$, and that is the backbone. Driving and navigation
-world models extend the design along the \emph{temporal} axis. Orbis interleaves
-spatial and temporal attention inside each block (an STDiT), so a token attends
-both to other patches in the same frame and to the same region across frames. The
-navigation world model NWM~\cite{nwm} takes a different route with a Conditional
-Diffusion Transformer (CDiT), which keeps the expensive self-attention on the
-target frame only and reads the context frames by cross-attention. That makes the
-cost \emph{linear} in the number of context frames instead of quadratic, which is
-what lets it scale to a billion parameters. The scheme in Figure~\ref{fig:dit} is
-the common ancestor of all of these.
+\subsection{Probing frozen representations}
+\label{sec:probing}
 
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.66\textwidth,height=0.50\textheight,keepaspectratio]{../diagrams/diagram-dit.pdf}
-\caption{The diffusion transformer (DiT) block. Patchified latent tokens pass
-through a multi-head self-attention sub-layer and a feed-forward sub-layer, each
-wrapped in a residual connection. The diffusion timestep $t$ and the conditioning
-$c$ come in through adaptive layer normalization: a small MLP regresses
-per-sub-layer scale and shift $(\gamma,\beta)$ plus a residual scale $\alpha$,
-zero-initialized, which is the ``adaLN-Zero'' variant. Stacking $N$ blocks gives
-the backbone. Driving models such as Orbis add temporal attention (STDiT), and
-navigation models such as NWM use a context cross-attention variant (CDiT). The
-diagram is schematic on purpose; a detailed per-block version is left for
-separate work.}
-\label{fig:dit}
-\end{figure}
+A probe is a small model trained on frozen features to read out a target
+quantity~\cite{alain_probe}. A linear probe tests what is linearly available. A
+small nonlinear probe tests what is available with little extra computation. We
+use both. We compare Orbis with two strong self-supervised encoders.
+DINOv2~\cite{dinov2} is an image encoder trained by self-distillation, and the
+Orbis semantic latent is trained to imitate it. V-JEPA~2~\cite{vjepa2} is a video
+encoder trained to predict masked parts of a clip in feature space, and was also
+used for planning in robotics. Both are trained on general data, Orbis on driving
+video only.
 
-\subsection{World models}
-\label{sec:world-models}
-
-\paragraph{The world-model concept.}
-A world model is a learned model of an environment's dynamics. Given the current
-state, or a history of observations, and optionally an action, it predicts the
-next state and possibly a reward. The point is that an agent with such a model
-can ``imagine'' the outcome of candidate actions internally, which helps with
-sample-efficient reinforcement learning, with representation learning and with
-planning. World models were originally studied in games and other simulated
-environments, where the dynamics are clean and interaction is unlimited. What
-changed is the recent wave of high-quality video generative models, which made it
-practical to learn world models straight from raw video of the real world, so the
-predictive model becomes a learned simulator. For driving this is especially
-appealing, because raw front-camera video is abundant and unlabeled, so a video
-world model can avoid a lot of the manual perception engineering a conventional
-stack needs.
-
-\paragraph{Popular video and driving world models.}
-Several lines of work have made video prediction a workable substrate for world
-modelling. In games and simulation, DIAMOND and GameNGen use diffusion models to
-emulate engines such as Atari and Doom from frames and actions. For driving,
-GAIA-1 was an influential early demonstration of controllable future generation
-conditioned on action and text, built on a discrete token model. Diffusion-based
-driving models such as Vista and GEM fine-tune general-purpose pretrained video
-diffusion backbones, Stable Video Diffusion among them, to produce
-high-resolution, high-frame-rate rollouts of up to about fifteen seconds, and
-DrivingWorld pushes rollout coherence further. Orbis argues against this trend.
-Its observation is that these large pretrained-backbone models degrade quickly
-over long horizons and on demanding maneuvers such as turns, where they often
-stop early or drift into paths no car would take. To put a number on that, Orbis
-introduces a distribution-level trajectory-based evaluation: generated videos are
-mapped to pose sequences, and realism and coverage are measured with
-precision/recall, Fréchet distance and average displacement error. The reason is
-that standard video metrics such as FVD are insensitive to scene dynamics and
-ego-motion. The same reasoning applies to our probe, which also has to be judged
-on the \emph{distribution} of trajectories rather than on a single point
-estimate.
-
-\paragraph{Orbis.}
-Orbis~\cite{orbis}, described in detail in Section~\ref{sec:orbis}, contributes
-two things that matter here. It is trained from raw video only and is far more
-economical than its competitors, $469$M parameters and $280$ hours of video
-against the thousands of hours and larger backbones used elsewhere, which
-suggests the learned latent is an efficient general representation rather than a
-memorized one. And its hybrid tokenizer allows a controlled comparison between
-continuous and discrete world models, which comes out in favour of the continuous
-flow-matching version. The consequence for this report is that Orbis gives us a
-compact, well-trained, raw-video latent, and how informative that latent is for
-downstream driving tasks is an open question. That is what the attentive
-diffusion probe is built to measure.
-
-\paragraph{Navigation world models.}
-The Navigation World Model (NWM)~\cite{nwm} is the closest precedent to our
-study, because it makes the planning use of a video world model explicit. NWM is
-a controllable video generation model trained on egocentric video of human and
-robotic agents together with their navigation actions
-$(\Delta x,\Delta y,\Delta\phi)$ and a time shift. It uses the CDiT architecture
-from Section~\ref{sec:dit} to autoregressively predict future latent states from
-past states and actions. The interesting part is what happens after training: NWM
-is used for \emph{planning}. It simulates candidate action sequences and scores
-how well the imagined future reaches a goal, either optimizing actions from
-scratch in a model-predictive-control loop or ranking trajectories proposed by an
-external policy. That is evidence for the broader claim behind our work, namely
-that the representation and rollouts of a video world model carry usable
-information about future motion. NWM \emph{generates and scores} full future
-videos in order to plan. Our probe takes the cheaper route and reads the world
-model's latent directly, training a small diffusion head to predict the future 2D
-trajectory, which tests how much of that planning-relevant information is already
-accessible in the frozen Orbis latent without much further processing.
-
-\subsection{Trajectory planners}
+\subsection{Planning on NAVSIM}
 \label{sec:planners}
 
-What the probe outputs, a future ego trajectory in the vehicle frame predicted
-from camera images, is the same object a driving planner outputs. It is
-therefore useful to look at how planners are built: partly to have a sense of
-what a reasonable trajectory predictor scores on the benchmarks we use, and
-partly to be clear about what the probe is not.
+NAVSIM~\cite{navsim1,navsim} scores a planner's 4-second trajectory by
+simulating it in the logged scene (Section~\ref{sec:epdms}). Most strong
+planners on it are trained by imitation of the logged driver.
+TransFuser~\cite{transfuser} regresses one trajectory from camera and LiDAR.
+VADv2~\cite{vadv2} and Hydra-MDP~\cite{hydra_mdp,hydra} score a fixed vocabulary
+of candidate trajectories, and Hydra-MDP adds heads that learn the simulator's
+sub-scores for every candidate. DiffusionDrive~\cite{diffusiondrive} generates
+trajectories with a truncated diffusion process around anchor trajectories.
+DriveSuprim~\cite{drivesuprim} and similar methods focus on selecting the best
+of many candidates. PDM-Closed~\cite{pdm} is a rule-based planner with access to
+the map and the other agents, and is the reference for the progress score.
 
-The usual split in this literature is ``modular'' versus ``end-to-end'', but
-that distinction explains rather little, and both surveys we rely on
-here~\cite{e2esurvey,e2eplansurvey} argue that other questions separate the
-methods better. We use three of them:
+Two warnings from this literature shape our setup. First, the ego status
+(velocity and acceleration) alone already predicts the future trajectory well in
+open-loop benchmarks~\cite{admlp,egostatus}. A probe that gets the ego status
+measures something different from a probe that sees only images, so we report
+the two separately. Second, average displacement error is a poor guide to
+driving quality, which is why we also report EPDMS.
 
-\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=3pt]
-\item What sits between the sensors and the trajectory? A hand-built pipeline
-(perception, tracking, prediction, planning) with an explicit cost function; a
-learned pipeline that keeps those modules but makes them differentiable and
-trains them for the planning loss; or a single network mapping sensors to a
-trajectory.
-\item How is the trajectory produced? By search or optimization over a dynamics
-model, by regressing waypoints, by picking from a fixed set of candidates, by
-sampling from a generative model, or by generating many candidates and learning
-to rank them.
-\item What trains it? Hand-written rules, human demonstrations, distillation
-from a privileged teacher, reward from a simulator, or an auxiliary prediction
-loss.
-\end{enumerate}
-
-\noindent
-Figure~\ref{fig:planner-taxonomy} groups the methods by the first question, and
-Table~\ref{tab:planner-classes} classifies a set of representative systems along
-all three.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=\textwidth,height=0.52\textheight,keepaspectratio]{../diagrams/diagram-planner-taxonomy.pdf}
-\caption{Planners grouped by what sits between the sensors and the trajectory.
-Rule-based methods search or optimize over an explicit model of the scene, which
-a perception stack has to supply. Learned policies replace part or all of that
-with a network. World-model methods use a predictive model either to pretrain the
-encoder, to imagine and score candidate plans, or as an extra training loss. The
-probe (orange) is the most restrictive case of the third group: the world model
-stays frozen and only the head on top of its latent is trained.}
-\label{fig:planner-taxonomy}
-\end{figure}
-
-\paragraph{Rule-based and optimization planners.}
-Before learned planners took over, the algorithms fell into four groups. Graph
-search discretizes the configuration space and runs Dijkstra, A$^*$ or hybrid
-A$^*$ over it, either on a cell grid or on a lattice of kinematically feasible
-motion primitives attached to the lane graph. Sampling-based planners (RRT, the
-asymptotically optimal RRT$^*$ and BIT$^*$, PRM) grow a tree or roadmap directly
-in continuous space. Interpolating-curve methods fit polynomials or splines in
-the Frenet frame of a reference centerline, which decouples lateral from
-longitudinal motion and keeps the search low-dimensional. The fourth group
-solves a receding-horizon optimization problem with explicit collision and
-comfort constraints.
-
-All four assume the same thing: that the world state is available explicitly, as
-an HD map together with tracked objects and forecast agent trajectories, and
-that the objective can be written down as a cost. The output is then
-interpretable and kinematically feasible by construction. What it costs is a
-full perception stack upstream, plus a cost function that has to be tuned by
-hand for each scenario type.
-
-The version that matters for benchmarking is PDM-Closed~\cite{pdm}, which wraps
-the Intelligent Driver Model~\cite{idm}, a car-following rule from 2000, in a
-model-predictive-control loop. At each step it produces $15$ proposals: five
-target speeds between $20\%$ and $100\%$ of the speed limit, crossed with three
-lateral offsets from the centerline ($-1$, $0$, $+1$\,m). Each proposal is
-simulated forward for $4$\,s with a kinematic bicycle model under IDM
-longitudinal control and scored with the nuPlan closed-loop metric, and the best
-one is executed. It won the 2023 nuPlan challenge, and in
-Table~\ref{tab:planner-numbers} it beats every learned entry in closed loop by
-$20$ to $40$ points. That is the reference point we keep coming back to.
-
-\paragraph{Imitation learning and where it breaks.}
-Learned policies start with ALVINN~\cite{alvinn} and PilotNet~\cite{pilotnet},
-which regress steering from a front camera, and with conditional imitation
-learning~\cite{cil}, which adds a navigation command so the network knows which
-way to go at an intersection. Two problems have driven most of the work since.
-
-The first is covariate shift. Behaviour cloning is fitted on the states the
-expert visited, but at test time the policy visits the states its own mistakes
-produce, and the errors accumulate. The second is causal
-confusion~\cite{causalconfusion}: nothing stops a discriminative model from
-keying on something that merely correlates with the expert action instead of
-something that causes it. The standard example is the car's own past velocity,
-which produces the ``inertia problem'', where a stopped vehicle never pulls away
-again. Counter-intuitively, giving the network more input can make this worse.
-
-The usual fixes are perturbing the expert trajectory and adding synthesized
-recovery examples together with auxiliary losses
-(ChauffeurNet~\cite{chauffeurnet}); removing ego history from the input;
-collecting data online in the style of DAgger; distilling from a privileged
-teacher that sees ground-truth state (Learning by Cheating~\cite{lbc}); and
-fine-tuning with policy gradients through a differentiable simulator (Urban
-Driver~\cite{urbandriver}).
-
-\paragraph{From sensor fusion to planning-oriented networks.}
-TransFuser~\cite{transfuser} is the baseline most of the field compares against.
-It fuses multi-view camera and LiDAR features into a BEV representation with
-transformer blocks and decodes waypoints with a GRU, and NAVSIM ships it as its
-reference agent. TCP~\cite{tcp} showed that predicting a trajectory and
-predicting controls are complementary and worth combining.
-
-UniAD~\cite{uniad} made the argument that gave this line of work its name.
-Detection, tracking, mapping, motion forecasting and occupancy are all kept, but
-as query-based differentiable modules that feed the planner and take gradients
-from it, so the intermediate representations end up shaped by the planning
-objective rather than by their own metrics. VAD~\cite{vad} replaced the dense
-rasterized BEV with vectorized map and agent tokens, which is several times
-cheaper, and VADv2~\cite{vadv2} swapped trajectory regression for a distribution
-over a precomputed anchor vocabulary. PARA-Drive~\cite{paradrive} then observed
-that the modules need not run in sequence at all, and got close to a $3\times$
-speedup by running them in parallel at comparable accuracy.
-
-\paragraph{Four ways of producing the trajectory.}
-This is the axis our probe takes a position on, so it is worth going through in
-some detail.
-
-Regression is the simple option: one head, waypoints, an $L_1$ or $L_2$ loss. It
-does well on displacement metrics. The problem is that the minimizer of a squared
-loss is the conditional mean, so where the data is genuinely multi-modal (going
-straight and turning left are both plausible) the network learns the average of
-the two. That average can be a path that is neither, and possibly not even
-drivable.
-
-Classification avoids this by fixing $K$ candidate trajectories in advance,
-usually k-means centroids over the nuPlan logs with $K$ in the thousands, and
-predicting a categorical distribution over them. VADv2~\cite{vadv2} and
-Hydra-MDP~\cite{hydra_mdp} work this way. The output is multi-modal by
-construction and easy to rank, but the resolution is capped by whatever the
-vocabulary contains.
-
-Generative heads model the trajectory distribution directly.
-Diffusion-Planner~\cite{diffusionplanner} denoises ego and neighbour
-trajectories jointly with a DiT backbone and is state of the art on nuPlan.
-DiffusionDrive~\cite{diffusiondrive} starts the reverse process from anchored
-Gaussians rather than from pure noise, which lets it cut the number of denoising
-steps from $20$ to $2$; it reports $88.1$ PDMS on NAVSIM at $45$\,FPS. This is
-the family the probe belongs to, for the reason given two paragraphs above.
-
-Propose-and-score generates many candidates, learns a scorer, and takes the
-arg\,max. Hydra-MDP~\cite{hydra_mdp} distills an ensemble of rule-based metric
-teachers, one head per sub-score of the PDM score, alongside the human teacher,
-so that the scoring happens inside the network instead of in non-differentiable
-post-processing; it won the 2024 NAVSIM challenge. Hydra-MDP++~\cite{hydra}
-extends the set of experts and is where the EPDMS formulation of
-Section~\ref{sec:pdms} comes from. GTRS~\cite{gtrs} combines a diffusion
-proposal generator with a scorer trained under dropout on a much denser
-vocabulary than it sees at inference, and won the 2025 NAVSIM v2 challenge.
-DriveSuprim~\cite{drivesuprim} adds coarse-to-fine filtering of the candidate
-set, rotation augmentation and self-distillation.
-
-There is a pattern here. The strongest end-to-end systems have converged on the
-same propose-and-score structure as PDM-Closed, with the hand-written simulator
-replaced by a learned scorer that was trained to imitate it.
-
-\paragraph{Reinforcement learning.}
-RL trains on the states the policy itself visits, so covariate shift is not an
-issue, but it needs a simulator that reacts and a reward function.
-Think2Drive~\cite{think2drive} learns a DreamerV3-style latent model of CARLA and
-plans inside it. CaRL~\cite{carl} argues that the bottleneck is reward
-engineering rather than the algorithm, and shows that a much simpler reward
-scaled to $300$M samples, $30\times$ more than earlier work, does better; it
-reports $64$ Driving Score on CARLA \texttt{longest6}~v2. In practice this line
-of work stays inside simulation, because computing the reward needs an
-environment that responds to the agent.
-
-\paragraph{VLM-based planners.}
-A newer group puts a vision-language model in the loop. EMMA~\cite{emma}
-fine-tunes Gemini to emit the planned trajectory as text, together with
-detections and the road graph. DriveVLM~\cite{drivevlm} runs a slow VLM that
-proposes a coarse trajectory and a fast end-to-end model that refines it.
-Senna~\cite{senna} restricts the VLM output to a discrete meta-action, which then
-conditions VAD. The motivation is semantic context, plus an interpretability
-story that comes almost for free. Whether the language actually improves the
-trajectory or only the explanation attached to it is still
-open~\cite{e2eplansurvey}.
-
-\paragraph{World models used for planning.}
-This is where our work sits, and the term covers three fairly different things.
-
-The first is representation pre-training: the encoder is trained with a
-self-supervised predictive objective on unlabeled video, and the features are
-then used for planning. PPGeo~\cite{ppgeo} learns pose and depth from
-uncalibrated YouTube driving footage and then predicts ego-motion;
-ViDAR~\cite{vidar} pretrains by forecasting future point clouds.
-
-The second is imagination and scoring. Drive-WM~\cite{drivewm} generates
-multi-view future video for each candidate maneuver and picks one using an
-image-based reward. WoTE~\cite{wote} does the rollout in a BEV latent instead of
-in pixels, which is cheap enough to score candidates online. NWM~\cite{nwm},
-covered in Section~\ref{sec:world-models}, optimizes actions in an MPC loop over
-generated video.
-
-The third keeps a conventional planner and adds a latent prediction loss on the
-side. LAW~\cite{law} predicts future visual latents from the current features and
-the planned trajectory. World4Drive~\cite{world4drive} builds an intention-aware
-latent world model and drops perception annotations altogether.
-
-One caveat from the survey~\cite{e2eplansurvey} is directly relevant to us: good
-video prediction does not by itself mean the model is choosing safe
-trajectories. That is an argument for measuring what the latent contains rather
-than assuming it.
-
-\paragraph{Why open-loop numbers are not enough.}
-Two results are worth keeping in mind when reading any open-loop score. The
-first is that on nuPlan the open-loop and closed-loop numbers are
-anti-correlated, not merely uncorrelated. In
-Table~\ref{tab:planner-numbers}, PDM-Open is top on the open-loop score ($86$
-OLS) and near the bottom in closed loop ($50$ CLS-NR), while PDM-Closed is the
-other way round~\cite{pdm}. The reasons are structural: open-loop evaluation
-compares against the expert's own states, it punishes alternative maneuvers that
-would have been fine, and there are no agent reactions in
-it~\cite{e2eplansurvey}.
-
-The second is that open-loop planning on nuScenes is close to trivial. An MLP
-that sees only the ego status, with no scene input at all, is
-competitive~\cite{admlp,egostatus}, because the last few seconds of ego motion
-almost determine the next three. NAVSIM's pseudo-simulation
-(Section~\ref{sec:datasets}) is the response to this. It keeps the cheap,
-non-sequential evaluation but replaces displacement error with scores derived
-from simulation. It does not fix everything: the winning entry of the 2025
-NAVSIM v2 challenge reached roughly $53$ EPDMS on the \texttt{navhard} split,
-against over $90$ PDMS on \texttt{navtest}.
-
-\begin{table}[htbp]
-\centering
-\caption{Representative planners classified along the three axes used in this
-section: what sits between sensors and trajectory, how the trajectory is
-parameterized, and what trains it. Our setup is the last row.}
-\label{tab:planner-classes}
-\begin{tblr}{
-  width=\textwidth,
-  colspec={Q[l,2.9cm] X[l] X[l] X[l]},
-  row{1}={font=\bfseries},
-  rowsep=2.5pt,
-}
-\toprule
-Method & Structure & Trajectory head & Training signal \\
-\midrule
-PDM-Closed~\cite{pdm}       & rule-based, privileged map + agents & proposal rollout, rule score & none (hand-designed) \\
-TransFuser~\cite{transfuser}& single net, camera + LiDAR $\to$ BEV & GRU waypoint regression & imitation of logs \\
-UniAD~\cite{uniad}          & learned modular, query-based BEV & regression w/ occupancy cost & imitation + perception labels \\
-VADv2~\cite{vadv2}          & learned modular, vectorized tokens & classification over anchors & imitation (distribution) \\
-Hydra-MDP++~\cite{hydra}    & single net + metric scorer & vocabulary + per-metric heads & imitation + rule-teacher distillation \\
-DiffusionDrive~\cite{diffusiondrive} & single net & truncated anchored diffusion & imitation (denoising) \\
-GTRS~\cite{gtrs}, DriveSuprim~\cite{drivesuprim} & proposal generator + scorer & diffusion proposals, coarse-to-fine scoring & imitation + metric distillation \\
-CaRL~\cite{carl}            & single net inside simulator & control / waypoints & RL reward, closed loop \\
-EMMA~\cite{emma}            & vision-language model & trajectory as text tokens & imitation + multi-task text \\
-Drive-WM~\cite{drivewm}, WoTE~\cite{wote} & planner + generative world model & propose, imagine, score & imitation + future prediction \\
-LAW~\cite{law}, World4Drive~\cite{world4drive} & planner + latent world-model head & regression & imitation + latent future loss \\
-\midrule
-\textbf{This work} & \emph{frozen} world-model latent + probe & flow-matching sampler & regression of the trajectory distribution \\
-\bottomrule
-\end{tblr}
-\end{table}
-
-\begin{table}[htbp]
-\centering
-\caption{Left: nuPlan Val14, closed-loop score in the non-reactive (CLS-NR) and
-reactive (CLS-R) settings against the open-loop score (OLS), taken
-from~\cite{pdm}; the last three rows show the inversion between the two.
-Right: PDMS on NAVSIM \texttt{navtest} for camera-based end-to-end planners.
-These numbers are copied from the respective papers and use different backbones
-and training data, so they indicate roughly how far the field has moved rather
-than a controlled comparison.}
-\label{tab:planner-numbers}
-\begin{minipage}[t]{0.49\textwidth}
-\centering
-\begin{tblr}{
-  colspec={lccc},
-  row{1}={font=\bfseries},
-}
-\toprule
-nuPlan planner & CLS-NR & CLS-R & OLS \\
-\midrule
-IDM~\cite{idm}       & 76 & 77 & 38 \\
-Urban Driver~\cite{urbandriver} & 53 & 50 & 82 \\
-GC-PGP               & 59 & 55 & 83 \\
-PlanCNN              & 73 & 72 & 64 \\
-\midrule
-PDM-Open~\cite{pdm}  & 50 & 54 & \textbf{86} \\
-PDM-Closed~\cite{pdm}& \textbf{93} & \textbf{92} & 42 \\
-PDM-Hybrid~\cite{pdm}& \textbf{93} & \textbf{92} & 84 \\
-\bottomrule
-\end{tblr}
-\end{minipage}
-\hfill
-\begin{minipage}[t]{0.49\textwidth}
-\centering
-\begin{tblr}{
-  colspec={lc},
-  row{1}={font=\bfseries},
-}
-\toprule
-NAVSIM planner & PDMS \\
-\midrule
-TransFuser~\cite{transfuser}          & 84.0 \\
-Hydra-MDP~\cite{hydra_mdp}            & 86.5 \\
-DiffusionDrive~\cite{diffusiondrive}  & 88.1 \\
-\midrule
-DriveSuprim~\cite{drivesuprim}        & 93.5 \\
-\bottomrule
-\end{tblr}
-\end{minipage}
-\end{table}
-
-\paragraph{Where the probe sits.}
-Next to everything above, our setup is stripped down on purpose. There is no HD
-map, no tracked agents, no agent forecasts, no scorer and no closed loop, only a
-single frozen Orbis latent and a small flow-matching head. It belongs to the
-representation branch of the world-model family (right-hand column of
-Figure~\ref{fig:planner-taxonomy}), but it is stricter than PPGeo, ViDAR or LAW,
-since we neither fine-tune the encoder nor train the predictive loss alongside.
-The latent is fixed, which is what lets a positive result say something about the
-representation rather than about the training recipe.
-
-Three points from this section carry over into the experiments. The head has to
-be generative and not a regressor, because a squared loss on multi-modal data
-gives an averaged path. The baselines to compare against are the ones that bound
-the task from below, constant velocity and the ego-status MLP, plus TransFuser
-as a trained reference; the propose-and-score systems at the top of the
-leaderboard consume far more supervision than a probe does, so they are not a
-fair comparison. And displacement error on its own does not show much, which is
-why we also use PDMS/EPDMS and the distribution-level view taken from Orbis.
+World models have been used for planning before. Drive-WM~\cite{drivewm} rolls
+out a world model to compare candidate plans, LAW~\cite{law} and
+World4Drive~\cite{world4drive} train a latent world model as an auxiliary task of
+an end-to-end planner, and navigation world models~\cite{nwm} plan by search
+over rollouts. These methods train the world model together with the planner or
+use it as a simulator. We instead ask what a world model trained without any
+planning objective already knows, by keeping it frozen.

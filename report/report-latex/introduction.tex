@@ -1,179 +1,56 @@
 \section{Introduction}
 \label{sec:introduction}
 
-A lot of recent work on autonomous driving is organized around the idea that an
-agent should be able to imagine what will happen before it acts. A \emph{world
-model} is the component that makes that possible: it learns the dynamics of the
-environment from observation and can roll out plausible future states given the
-past. When the observations are front-camera video, what comes out is a learned
-simulator of the road ahead.
+A driving world model learns to predict future camera frames from past ones. To
+do this well it has to track how the scene moves and how the ego vehicle moves
+through it. So its internal features may already contain much of what a planner
+needs, without any driving labels. This report tests that idea on
+Orbis~\cite{orbis}, a flow-matching video world model trained only on raw
+front-camera video.
 
-Two things make this attractive. Raw driving video exists in enormous quantities
-and needs no manual annotation, so a world model can in principle pick up the
-long tail of driving behaviour that would be expensive to label. And a model
-that predicts future frames has to learn something about perception, about how
-the scene moves, and about the ego vehicle's own motion, which suggests its
-internal representation could be useful for decisions further down the stack.
+We freeze Orbis and train a small probe on its features to predict the future
+ego trajectory. If a small probe succeeds, the information was in the features
+and not learned by the probe. The probe is generative: a flow-matching model
+that samples trajectories, conditioned on the features. We chose a generative
+probe because driving is multimodal. At a junction the same past can continue
+left, straight or right, and a regression head trained with an $L_2$ loss
+predicts the average of these, a path no driver takes. A generative probe can
+represent all of them, and its samples tell us what the features say about the
+uncertainty of the future, not only about its mean.
 
-This report takes one such model, \textbf{Orbis}~\cite{orbis}, and asks a narrow
-question about it: does the latent it produces already contain what is needed to
-predict where the car is going? We answer it by attaching a small
-\emph{attentive diffusion probe} to the frozen image latent and training it to
-predict the future 2D trajectory of the ego vehicle. The probe is kept small on
-purpose. If it works, we want to be able to say the information was already in
-the representation, rather than that the probe learned the task on its own. We
-look at pointwise accuracy and also at the \emph{distribution} of the predicted
-trajectories, since driving is uncertain and multi-modal, and a model that
-collapses onto a single averaged path is not capturing that.
+Our earlier experiments with this probe raised a problem. The sampled
+trajectories started as a wide fan and became one narrow bundle as training went
+on, sometimes on the wrong side of a junction. We wanted to know whether this is
+a property of the features, of the probe, or of how we measured it. And we
+wanted to compare Orbis with other frozen encoders under a fair setup, which the
+earlier pipeline did not allow. It also did not follow the NAVSIM
+protocol~\cite{navsim1}, so its numbers could not be compared with published
+planners. We therefore rebuilt the experiments around the NAVSIM protocol
+(Section~\ref{sec:data}) and asked three questions.
 
-The rest of the report is background for this study. The introduction describes
-Orbis and the probing setup. Section~\ref{sec:related} covers diffusion and flow
-matching, the diffusion transformer, world models, and the planning literature.
-Section~\ref{sec:datasets} describes nuPlan and the NAVSIM pseudo-simulation
-benchmark, which is where trajectories get produced and scored.
-Section~\ref{sec:synthetic} checks the generative core of the probe on a
-synthetic distribution whose ground truth we know in closed form, and
-Section~\ref{sec:navsim-probe} describes the probe as it is actually implemented
-on NAVSIM logs: the data pipeline, the variable-length training setup, the image
-conditioning, and the metrics we use to judge a distribution of futures.
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item Why does the predicted distribution collapse during training, and what
+  prevents it? (Section~\ref{sec:collapse})
+  \item Which frozen representation holds the most information about the future
+  trajectory, and where in the world model is it? (Section~\ref{sec:features})
+  \item Are these features useful for planning when scored with the official
+  NAVSIM metric? (Section~\ref{sec:planning})
+\end{enumerate}
 
-\subsection{The Orbis world model}
-\label{sec:orbis}
-
-Orbis~\cite{orbis} predicts future video frames from front-camera observations.
-Its main claim is that a continuous, flow-matching world model is cheaper and
-holds up better over long rollouts than a discrete, token-based one. With $469$M
-parameters and around $280$ hours of raw video it reaches state-of-the-art
-video-prediction quality on the nuPlan, Waymo and nuPlan-turns benchmarks, and
-stays stable on rollouts of up to twenty seconds. For our purposes the important
-detail is that it is trained on raw video and nothing else. No depth maps, no
-bounding boxes, no HD maps, no privileged supervision of any kind, so whatever
-ends up in the latent got there through the predictive objective.
-
-The architecture follows the two-stage recipe that is by now standard for latent
-generative models, shown in Figure~\ref{fig:orbis}. \textbf{Stage~1} is an image
-\emph{tokenizer}, an autoencoder in the spirit of a VAE, which compresses a
-frame into a compact latent and decodes it back to pixels. \textbf{Stage~2} is
-the latent \emph{world model}, which works entirely in that latent space and
-autoregressively generates the next frame's latent from a window of context
-frames. Splitting the model this way lets the expensive generative part run at
-low spatial resolution while the tokenizer handles the high-frequency pixel
-detail.
-
-\paragraph{Stage 1: hybrid image tokenizer.}
-The tokenizer maps an image $\mathbf{I}\in\mathbb{R}^{H\times W\times 3}$ to a
-spatial latent compressed by a factor of $16$ in each dimension. What makes it
-unusual is that it is \emph{hybrid} and \emph{factorized}. Two encoders produce
-complementary representations: a \emph{semantic} encoder $\mathcal{E}_s$, kept
-close to DINOv2 features by a cosine similarity loss, and a \emph{detail}
-encoder $\mathcal{E}_d$ that picks up low-level appearance. Each stream is
-quantized against its own codebook, giving semantic tokens $\mathbf{q}_s$ and
-detail tokens $\mathbf{q}_d$, and the tokenizer is trained with the VQGAN
-objective. During fine-tuning the vector-quantization bottleneck is bypassed
-with probability $50\%$, so the same encoder ends up supporting a continuous
-latent $\mathbf{x}=(\mathbf{x}_s;\mathbf{x}_d)$ as well as a discrete one
-$\mathbf{q}=(\mathbf{q}_s;\mathbf{q}_d)$. That is what lets Orbis compare
-continuous and discrete world models under identical conditions. The latent we
-probe in this report is the continuous one, $\mathbf{x}$.
-
-\paragraph{Stage 2: latent-space diffusion world model.}
-The world model is a next-frame autoregressive predictor. It takes a window of
-encoded context frames $\mathbf{x}_{0:N-1}$ together with a noised (or fully
-masked) target frame, and predicts the clean target latent $\mathbf{x}_N$. In
-the continuous case this is done with a flow-matching objective and a
-spatio-temporal diffusion transformer (STDiT). Each block applies spatial
-attention within a frame, temporal attention across frames, and a feed-forward
-layer, and conditioning signals come in through adaptive layer normalization
-(AdaLN). At inference the model draws a noise tensor for the target frame and
-integrates the learned velocity field back to a clean latent. The generated
-frame is then appended to the context and the oldest one is dropped, so the
-window slides forward and the rollout continues. Ego-motion control (steering
-angle and speed) is optional: a small MLP embeds it and adds it to the AdaLN
-conditioning, which shows that the latent dynamics can be steered.
-
-The flow-matching objective defines a forward path from data to noise by linear
-interpolation,
-\begin{equation}
-\mathbf{x}^{\tau} = (1-\tau)\,\mathbf{x} + \tau\,\boldsymbol{\epsilon},
-\qquad \tau\in[0,1],\quad \boldsymbol{\epsilon}\sim\mathcal{N}(0,I),
-\label{eq:fm-forward-intro}
-\end{equation}
-and trains a network to predict the velocity that transports the corrupted
-target frame $\mathbf{x}_N^{\tau}$ back towards the data manifold, conditioned
-on the context:
-\begin{equation}
-\mathcal{L} = \mathbb{E}_{\tau,\boldsymbol{\epsilon}}
-\big[\,\lVert \mathbf{v}(\mathbf{x}_N^{\tau};\mathbf{x}_{0:N-1})
-- (\boldsymbol{\epsilon}-\mathbf{x}_N) \rVert^2\,\big].
-\label{eq:fm-loss-intro}
-\end{equation}
-Section~\ref{sec:diffusion-theory} goes through the theory behind
-Equations~\eqref{eq:fm-forward-intro} and~\eqref{eq:fm-loss-intro}.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=\textwidth,height=0.42\textheight,keepaspectratio]{../diagrams/diagram-orbis.pdf}
-\caption{The two-stage Orbis architecture. \textbf{Stage~1} is a hybrid
-tokenizer with a DINOv2-regularized semantic encoder and a detail encoder,
-producing a continuous latent $\mathbf{x}$, or equivalently a set of discrete
-tokens. \textbf{Stage~2} is a spatio-temporal diffusion transformer trained with
-flow matching, which predicts the next-frame latent $\hat{\mathbf{x}}_N$ from a
-window of context latents. The prediction is appended and the window slides
-forward, which is how long rollouts are produced. The frozen latent
-$\mathbf{x}$ is the representation we probe.}
-\label{fig:orbis}
-\end{figure}
-
-\subsection{Probing the latent for future trajectories}
-\label{sec:probe}
-
-The usual way to find out what a learned representation contains is to freeze it
-and train a small read-out head on some target task. If a simple probe succeeds,
-the information is accessible in the representation without much further
-processing~\cite{dosovitskiy_vit}. Our target task is future trajectory
-prediction: given the latent of the current and recent frames, predict the
-sequence of future 2D positions $(x,y)$ that the ego vehicle will follow in its
-own coordinate frame. This is the same output space that end-to-end planners use,
-and the same one the trajectory-based evaluation in Orbis uses, so the
-predictions can be compared against driving benchmarks directly.
-
-Two choices define the probe. The first is to use an \emph{attention} probe
-instead of a plain linear layer. The image latent is a spatial grid of tokens,
-and which regions matter for the future trajectory depends on the scene: lane
-markings, the vanishing point, a vehicle in front. A small set of query tokens
-attends over the frozen grid and pools it into a fixed-size context vector, so
-the probe can concentrate on the informative regions without touching the
-backbone. The second is to produce the trajectory with a \emph{diffusion} model
-operating directly in 2D trajectory space. Driving is multi-modal. At an
-intersection, turning left and turning right are both correct, and a regression
-head trained with an $L_2$ loss would average them into a straight-ahead path
-that no driver would take. A diffusion head learns the conditional distribution
-instead, and can sample several distinct plausible futures, which is what we
-need if we want to say anything about the \emph{distribution} of behaviours
-stored in the latent. Figure~\ref{fig:probe} sketches the setup. The version in
-Section~\ref{sec:navsim-probe} departs from the sketch in one place: the query
-tokens are fixed sinusoidal slot embeddings, and the pooled tokens are not
-collapsed into a single conditioning vector but enter the denoiser as keys and
-values of its attention stack.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=\textwidth,height=0.40\textheight,keepaspectratio]{../diagrams/diagram-probe.pdf}
-\caption{The attentive diffusion probe. The Orbis encoder is frozen and produces
-a spatial latent grid for the recent frames. A small attention probe with query
-tokens pools that grid into a context vector $\mathbf{c}$, which conditions a
-diffusion model that generates future 2D ego trajectories $(x,y)$ directly in
-trajectory space. Because the head is generative it can sample several distinct
-futures, for instance going straight and turning, so we can evaluate the
-distribution of trajectories rather than a single averaged path.}
-\label{fig:probe}
-\end{figure}
-
-This setup touches most of the report. The generative machinery in both Orbis
-and the probe is diffusion and flow matching (Section~\ref{sec:diffusion-theory}),
-carried by the diffusion transformer of Section~\ref{sec:dit}. Reusing a
-predictive video model as a substrate for planning is what places the work in
-the world-model literature of Section~\ref{sec:world-models}, next to navigation
-world models that already use rollouts to make decisions, and in the planning
-literature of Section~\ref{sec:planners}. Evaluating the trajectories that come
-out relies on the datasets and metrics of Section~\ref{sec:datasets}.
+The main findings are these.
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item The collapse is memorization of the training set. It appears when the
+  probe has enough capacity or too little data, and its onset moves later in
+  proportion to the number of training scenes, as predicted for diffusion models
+  by Bonnaire et al.~\cite{bonnaire}. A part of the earlier narrowing was not
+  collapse at all but an artefact of sampling with too few ODE steps.
+  \item The middle of the Orbis world model (block 11 of 24, at the last observed
+  frame) is the best of all tested representations. It lowers the energy score by
+  37\% against V-JEPA~2 and 46\% against DINOv2, and a linear map reads the ego
+  speed from it with $R^2=0.95$.
+  \item On the frozen features, a one-pass planner trained for two minutes reaches
+  EPDMS 0.881 on navtest. The diffusion probe reaches 0.810, and the best of four
+  of its samples 0.900, so the samples are good but picking one is hard.
+  \item The probes fail on unseen combinations of city and driving command, and
+  they stay as confident as on familiar inputs when they fail.
+\end{itemize}

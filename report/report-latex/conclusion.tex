@@ -1,0 +1,46 @@
+\section{Discussion and Conclusion}
+\label{sec:conclusion}
+
+We asked what a driving world model trained on raw video knows about the future
+ego trajectory, using a small generative probe on its frozen features.
+
+The collapse of the predicted distribution, which motivated this work, turned
+out to have two separate causes. Sampling with too few ODE steps pulls every
+sample towards the conditional mean, and that alone made a well-calibrated probe
+look as if it was collapsing. Real collapse is memorization of the training
+scenes. It needs a probe that can fit its training set, and its onset grows
+linearly with the number of training scenes, as the theory of Bonnaire et
+al.~\cite{bonnaire} predicts. A polynomial trajectory code is a better target
+than raw poses but does not change this, and reducing the probe size only
+prevents collapse by underfitting. The remedies are more data, early stopping on
+a proper scoring rule, and enough sampling steps. Mean displacement error is
+blind to all of this, so it should not be used to select generative trajectory
+models.
+
+The Orbis world model holds more about the future trajectory than DINOv2,
+V-JEPA~2 and its own tokenizer, by a wide margin and at every depth from block 7
+on. The information is concentrated in the middle of the network and in the
+tokens of the last observed frame rather than in the frame being predicted.
+Linear read-out confirms that ego speed and acceleration are almost directly
+available there. A planner on these frozen features, trained for two minutes,
+reaches an EPDMS of 0.881 on navtest, in the range of planners trained end to
+end with more sensors.
+
+Two results point to what is still missing. First, both the probe and the
+planner produce good candidate trajectories (best of four or eight scores 0.90
+to 0.96) but cannot pick the best one by imitation. Learning the simulator's
+sub-scores is the known fix, and our attempt with 5\% of the targets was not
+enough. Second, the probes do not generalize to unseen combinations of city and
+command, and they stay confident when they fail. Their dispersion drops on such
+inputs, so a calibration check on held-out data could at least flag the problem,
+but the model itself gives no warning.
+
+\paragraph{Limitations.}
+Most probes were trained with one seed, so differences below a few percent in
+energy are not reliable. The fast planner's three seeds span 0.02 EPDMS. The
+memorization slope rests on three training-set sizes. All encoders were reduced
+to 64 principal components, which may cost the wide encoders more than the
+narrow ones. We use only the front camera, our navhard numbers cannot be
+compared with the leaderboard, and our navtest numbers are a few points higher
+than the published devkit gives. Finally, NAVSIM is open loop with replayed
+agents, so none of this shows how the planners would behave in closed loop.

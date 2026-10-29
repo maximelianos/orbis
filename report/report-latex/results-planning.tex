@@ -1,0 +1,194 @@
+\section{Are the Features Useful for Planning?}
+\label{sec:planning}
+
+The energy score measures how well the probe predicts the logged future. A
+planner is judged differently: a trajectory that differs from the driver's but
+stays safe and makes progress is fine. We therefore scored the probes with EPDMS.
+
+\subsection{The diffusion probe on navtest}
+\label{sec:epdms-probe}
+
+\begin{table}[htbp]
+\centering
+\caption{EPDMS of the diffusion probes on navtest (12,146 scenes, official
+devkit). ``Sample'' scores the first of 32 samples, ``mean'' their average,
+``best of 4'' the best of the first four per scene (an oracle). Sub-scores are
+for the mean.}
+\label{tab:epdms-probe}
+\begin{tblr}{colspec={lrrrrrrr}, row{1}={font=\bfseries}, cells={font=\small}}
+\toprule
+Input & Sample & Mean & Best of 4 & NC & DAC & EP & EC \\
+\midrule
+constant velocity           & 0.259 &       &       & 0.681 & 0.578 & 0.777 & 0.553 \\
+none                        & 0.316 & 0.367 &       & 0.742 & 0.693 & 0.787 & 0.286 \\
+ego status + command        & 0.578 & 0.645 & 0.800 & 0.923 & 0.765 & 0.861 & 0.848 \\
+V-JEPA 2                    & 0.618 & 0.694 &       & 0.921 & 0.848 & 0.867 & 0.607 \\
+$q_{\text{sem}}$            & 0.620 & 0.709 &       & 0.933 & 0.871 & 0.862 & 0.515 \\
+DINOv2                      & 0.620 & 0.710 &       & 0.928 & 0.874 & 0.871 & 0.517 \\
+WM23                        & 0.662 & 0.740 &       & 0.941 & 0.870 & 0.877 & 0.689 \\
+WM11-ctx                    & 0.722 & 0.788 & 0.882 & 0.963 & 0.890 & 0.875 & 0.788 \\
+\midrule
+$q_{\text{sem}}$ + status + command & 0.711 & 0.775 & 0.877 & 0.952 & 0.879 & 0.874 & 0.877 \\
+WM11-ctx + status + command  & \textbf{0.756} & \textbf{0.810} & \textbf{0.900} & 0.969 & 0.898 & 0.876 & 0.877 \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+The image-only probes in Table~\ref{tab:epdms-probe} rank the same way on EPDMS as on the energy score, with the
+world model clearly first (0.788 against 0.710 for DINOv2). The offline ranking
+of Section~\ref{sec:features} is not an artefact of the metric.
+
+The ego-status probe, which had the best energy score, scores only 0.645. It
+leaves the drivable area much more often (DAC 0.765 against 0.890) because it
+cannot see the road. So its advantage on the energy score comes from predicting
+speed well, and speed is not what makes a plan safe. This is the clearest
+evidence in this report that displacement-type metrics can rank planners wrongly.
+
+The mean of the samples beats a single sample by 0.04 to 0.09. Most of this is
+extended comfort: samples are drawn independently in each frame, so consecutive
+plans disagree. A sampler that is right about the uncertainty is penalized for
+showing it.
+
+The best of four samples reaches 0.882 for WM11-ctx and 0.900 with the ego
+status. In most scenes one of the samples is a good plan. The weak step is
+choosing it.
+
+Adding the ego status and command to the world-model probe lowers the energy
+score by 41\%, but raises EPDMS only from 0.788 to 0.810, and mostly through
+comfort (EC 0.788 to 0.877). The speed input changes smoothly from frame to frame
+and ties consecutive plans to the same speed. DAC barely moves, because the probe
+already knew the speed from the image, and its remaining failures are about the
+road. With the ego status, the world-model features are still worth 0.035 over
+$q_{\text{sem}}$.
+
+\paragraph{navhard.}
+On the two-stage navhard split all probes score between 0.33 and 0.41 with the
+sample mean, and the image-only world-model probe (0.367) is only a little above
+constant velocity under the same devkit (0.326). With the ego status both encoders
+reach about 0.41. The loss happens in stage two, where lane keeping falls to
+about 0.45 for every planner, constant velocity included. Stage two starts from a
+displaced ego pose, and a probe that imitates the logged driver has never seen
+how to return to the lane.
+
+\subsection{A fast planner on the frozen features}
+\label{sec:fast-planner}
+
+The diffusion probe was designed to study distributions, not to drive. Its
+weaknesses as a planner are the ones above: independent samples per frame and no
+way to pick the best sample. To measure how much driving quality the frozen
+features support, we built a planner for that purpose. We also wanted it to train
+in minutes, so that many variants can be compared.
+
+\paragraph{Fast EPDMS.}
+A full navtest evaluation takes about 20 minutes, too long to use during
+training. We wrote a scorer that loads the metric cache of a fixed set of scenes
+once and scores all candidate trajectories of a scene in one call. It reproduces
+the official per-scene scores to four decimals. To choose the subset size, we
+compared the subset mean with the full navtest score for about 20 planners we had
+already scored, over 50 random draws per size. With 500 scenes the mean absolute
+error is 0.017 and the Spearman rank correlation with full navtest is 0.98, while
+with 25 scenes the error is 0.06, larger than most differences between our runs.
+Scoring 500 scenes takes about one minute. Final numbers are always on full
+navtest.
+
+\paragraph{Planner.}
+The ego velocity, acceleration, past poses and driving command go through an MLP
+into one ego token. Each cell of the cached feature grid becomes one image token.
+Two transformer layers mix them. A regression head reads one query and outputs
+the eight poses, trained with an $L_1$ loss. A vocabulary head, in the style of
+VADv2 and Hydra-MDP~\cite{vadv2,hydra_mdp}, scores 256 anchor trajectories from
+k-means on the training futures and refines the best one. All 92k training scenes
+fit on the GPU, and one run of 6000 steps takes one to four minutes.
+
+\begin{table}[htbp]
+\centering
+\caption{Fast planner, EPDMS on the 500-scene navtest subset. ``Best of 8'' is the
+best of the top 8 anchors of the vocabulary head (an oracle). The first block
+gives the reference points scored on the same scenes.}
+\label{tab:fast-planner}
+\begin{tblr}{colspec={lrr}, row{1}={font=\bfseries}}
+\toprule
+Planner & EPDMS & Best of 8 \\
+\midrule
+human (logged future)                         & 0.949 & \\
+PDM-Closed (privileged map and agents)        & 0.871 & \\
+diffusion probe WM11-ctx, sample mean         & 0.782 & \\
+constant velocity                             & 0.209 & \\
+\midrule
+regression, WM11-ctx, width 256               & \textbf{0.887} & \\
+vocabulary, WM11 (3 seeds)                    & 0.863--0.885 & 0.956 \\
+vocabulary, WM11-ctx                          & 0.853 & 0.949 \\
+\quad without velocity and acceleration       & 0.831 & 0.946 \\
+\quad with WM23-ctx                           & 0.836 & 0.944 \\
+\quad with DINOv2                             & 0.828 & 0.944 \\
+\quad with $q_{\text{sem}}$                   & 0.824 & 0.955 \\
+\quad with V-JEPA 2                           & 0.821 & 0.942 \\
+\quad without image                           & 0.720 & 0.909 \\
+regression, WM11-ctx, width 128              & 0.869 & \\
+\quad with 10k instead of 92k training scenes & 0.824 & \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+\paragraph{Results.}
+Table~\ref{tab:fast-planner} gives the main runs. On full navtest the
+regression planner reaches 0.881 after 1.8 minutes of training, and the
+vocabulary planner 0.857. Both are well above the diffusion probe (0.788 on full
+navtest), and on the subset above the privileged PDM-Closed (0.871).
+
+The ablations repeat the earlier findings in the planning metric. Without image
+features EPDMS falls to about 0.72, so the image is needed for driving even with
+the full ego status. Without velocity and acceleration it falls by 0.02. The world
+model is again the best encoder, ahead of DINOv2, $q_{\text{sem}}$ and V-JEPA~2.
+Training data matters more than model details: 10k instead of 92k scenes costs
+0.045, while 20k instead of 6k steps gains 0.01, the vocabulary size between 64 and
+1024 changes little, and the regression and vocabulary heads are equal within
+seed noise (three seeds span 0.863 to 0.885).
+
+The best of the top 8 anchors scores 0.95 to 0.96, the level of the human driver.
+As with the diffusion probe, the proposals contain a good trajectory and imitation
+is not enough to rank them. Hydra-MDP addresses this by learning the PDM
+sub-scores of every anchor. We tried this with sub-score targets for 5000 training
+scenes (5\% of the data, which took about 50 minutes to compute). On these scenes
+the best anchor per scene scores 0.991 and the best single anchor for all scenes
+only 0.661, so the right choice depends on the scene. But distillation gave
+0.872 to 0.877, within the seed noise of the plain vocabulary planner. With 5\% of
+the targets the sub-score head does not learn enough to rank better than
+imitation. Targets for all of navtrain would take about 15 hours to compute, and
+we stopped there.
+
+\subsection{Comparison with published planners}
+\label{sec:published}
+
+\begin{table}[htbp]
+\centering
+\caption{navtest EPDMS. Published numbers from the respective papers. Our devkit
+scores the human and PDM-Closed references a few points higher than published
+(Section~\ref{sec:epdms}), so the comparison is approximate.}
+\label{tab:published}
+\begin{tblr}{colspec={lllr}, row{1}={font=\bfseries}, cells={font=\small}}
+\toprule
+Planner & Sensors & Trained & EPDMS \\
+\midrule
+ego-status MLP                         & none           & end to end & 0.640 \\
+TransFuser~\cite{transfuser}           & 3 cameras + LiDAR & end to end & 0.767 \\
+Hydra-MDP++~\cite{hydra}               & cameras        & end to end & 0.814 \\
+PDM-Closed~\cite{pdm}                  & privileged     & rule-based & 0.828 \\
+DiffusionDrive~\cite{diffusiondrive}   & cameras + LiDAR & end to end & 0.843 \\
+human                                  &                &            & 0.903 \\
+\midrule
+ours, diffusion probe, WM11-ctx        & front camera   & frozen + 19k-param probe & 0.788 \\
+ours, diffusion probe, WM11-ctx + status & front camera & frozen + probe & 0.810 \\
+ours, fast regression planner          & front camera   & frozen + 2 min training & 0.881 \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+Table~\ref{tab:published} places our planners next to published ones. The
+published planners train their own backbones end to end, most with more cameras
+or LiDAR. Our planners see only the front camera through a frozen model that was
+never trained on trajectories. Even with a few points of devkit difference, the
+fast planner on Orbis features is in the range of strong end-to-end planners.
+This is the practical answer to our question: the world model has learned enough
+about driving from video alone that a two-minute read-out drives as well as
+planners trained for the task.

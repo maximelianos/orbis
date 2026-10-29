@@ -1,0 +1,152 @@
+\section{Method}
+\label{sec:method}
+
+\subsection{Frozen features under one interface}
+\label{sec:features-interface}
+
+Encoders differ in resolution, width and in how many frames they see. If each
+gets its own probe, a difference in results could come from the probe. So every
+encoder is reduced to the same input: its spatial feature grid, average-pooled to
+$9\times16$ cells, projected on its first 64 principal components and scaled by
+one global constant. The PCA is fitted on training logs only. The tokenizer
+latents keep their native 16 channels. Table~\ref{tab:encoders} lists the
+features.
+
+\begin{table}[htbp]
+\centering
+\caption{Frozen features. Per-frame features are computed for each of the four
+history frames, clip features once per scene from all four.}
+\label{tab:encoders}
+\begin{tblr}{colspec={lX[l]ll}, row{1}={font=\bfseries}, width=\textwidth}
+\toprule
+Name & Encoder & Frames & Channels \\
+\midrule
+$q_{\text{sem}}$, $q_{\text{rec}}$ & Orbis tokenizer, semantic and detail latents & per frame & 16 \\
+DINOv2 & DINOv2 ViT-B/14~\cite{dinov2}, last layer & per frame & 64 of 768 \\
+V-JEPA 2 & V-JEPA 2 ViT-L~\cite{vjepa2} on the 4-frame clip, newest time slot & clip & 64 of 1024 \\
+WM$b$ & Orbis world model after block $b$, next-frame slot & clip & 64 of 768 \\
+WM$b$-ctx & Orbis world model after block $b$, last observed frame & clip & 64 of 768 \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+For the world model we run one forward pass over the four encoded history frames
+and a pure-noise next frame ($\tau=1$), and keep the tokens after blocks 3, 7, 11,
+15, 19 and 23. Two token positions are interesting. The next-frame slot is where
+the model builds its prediction of the future. The last observed frame holds the
+current scene as the model has contextualized it. We do not know in advance which
+one carries more about the ego motion, so we test both.
+
+\subsection{The probe}
+\label{sec:probe}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=2pt, align=center, font=\small,
+              minimum height=1.1cm, inner sep=4pt, text width=2.3cm},
+  frozen/.style={box, fill=gray!15},
+  arr/.style={-{Stealth[length=2mm]}, thick}]
+\node[box, text width=1.6cm] (img) {4 front\\frames};
+\node[frozen, right=0.5cm of img] (enc) {frozen encoder\\(Orbis, DINOv2,\\V-JEPA 2)};
+\node[box, right=0.5cm of enc, text width=2.0cm] (grid) {$9\times16$ grid\\64 channels};
+\node[box, right=0.5cm of grid, text width=2.9cm] (probe) {probe: 16 tokens per frame, query attends, 4 blocks};
+\node[box, right=0.5cm of probe, text width=2.0cm] (out) {$K$ sampled\\trajectories};
+\node[box, below=0.5cm of probe, text width=2.9cm, dashed] (ego) {ego status, command\\(optional tokens)};
+\draw[arr] (img) -- (enc);
+\draw[arr] (enc) -- (grid);
+\draw[arr] (grid) -- (probe);
+\draw[arr] (probe) -- (out);
+\draw[arr] (ego) -- (probe);
+\end{tikzpicture}
+\caption{The probing setup. Only the probe is trained. It is a flow-matching
+model on a 9-number polynomial code of the 4\,s trajectory.}
+\label{fig:probe}
+\end{figure}
+
+The probe (Figure~\ref{fig:probe}) is a conditional flow-matching model in the
+sense of Equation~\eqref{eq:fm-loss}. Each frame's feature grid is pooled by
+attention into 16 tokens, and a learned embedding marks the frame. A single query
+token, built from the noisy trajectory code and the flow time, attends to these
+tokens through four transformer blocks with AdaLN-Zero time
+conditioning~\cite{dit}, and predicts the velocity. For the ego-status
+experiments the velocity and acceleration enter as one extra token and the
+driving command as another.
+
+\paragraph{Trajectory code.}
+The flow does not act on the 24 raw numbers of the eight poses. Each of $x$, $y$
+and $\psi$ is fitted by a cubic polynomial in time without a constant term (the
+trajectory starts at the origin), which gives a 9-number code. The fit error on
+training trajectories is 2.8\,cm. The code is smooth by construction and cannot
+produce jagged paths. Section~\ref{sec:codec} compares it with raw poses.
+
+\paragraph{Size.}
+The probe has hidden width 16 and about 19k parameters. We kept it this small so
+that it cannot learn much on its own and the results reflect the features.
+Section~\ref{sec:capacity} shows what happens with a larger probe. All probes are
+trained for 100k steps with batch 256 and a cosine learning-rate schedule from
+$5\cdot10^{-4}$ to $5\cdot10^{-5}$, and sample with 10 Euler steps unless stated
+otherwise.
+
+\subsection{Metrics for a distribution of trajectories}
+\label{sec:metrics}
+
+For each scene we draw $K$ samples $X_1,\dots,X_K$ (16 during training, 32 in
+offline evaluation) and compare them with the one logged future $y$. Let $d$ be
+the average displacement between two trajectories (ADE).
+
+\paragraph{Energy score.}
+The main metric is the energy score~\cite{gneiting}, computed on the 16 numbers
+$(x,y)$ of the eight poses:
+\begin{equation}
+\text{ES} = \mathbb{E}\,\lVert X - y\rVert - \tfrac12\,\mathbb{E}\,\lVert X - X'\rVert ,
+\label{eq:energy}
+\end{equation}
+with $X, X'$ independent samples. It is a strictly proper scoring rule: its
+expectation is minimized only when the samples follow the true conditional
+distribution. The first term rewards samples close to the truth, the second
+rewards spread. A collapsed sampler loses on the second term, a too-wide sampler
+on the first. So, unlike ADE, the energy score cannot be gamed in either
+direction.
+
+\paragraph{Spread and dispersion.}
+The spread is $\mathbb{E}\,d(X,X')$ and the dispersion is the ratio
+\begin{equation}
+\text{dispersion} = \frac{\mathbb{E}\,d(X,X')}{\mathbb{E}\,d(X,y)} .
+\label{eq:dispersion}
+\end{equation}
+If the sampler is calibrated, $y$ is distributed like one more sample, so the
+two expectations are equal and the dispersion is 1. Values below 1 mean the
+samples are closer to each other than to the truth, which is the signature of an
+overconfident or collapsed model. Values above 1 mean the samples are too wide.
+
+\paragraph{Displacement errors.}
+We also report the best-of-$K$ error $\text{minADE}_K=\min_k d(X_k,y)$, which
+asks whether any sample covers the truth, and the error of the sample mean. The
+NAVSIM literature reports the $L_2$ error at 4\,s of a single trajectory, which
+for us is the sample mean.
+
+\paragraph{EPDMS of a sampler.}
+A planner must output one trajectory. We score either the first sample (one
+random draw), the mean of the 32 samples, or the best of four samples per scene.
+The last is an oracle and measures whether a good trajectory is among the
+proposals.
+
+\subsection{Reference points}
+\label{sec:baselines}
+
+Three baselines need no training. Constant velocity drives straight at the
+current speed. The training mean predicts the average training trajectory for
+every scene. The nearest-status lookup copies the future of the training scene
+with the closest velocity and acceleration and the same driving command. On the
+validation logs they reach ADE 2.76, 5.85 and 1.26\,m. The lookup halves the
+error of constant velocity without seeing an image, which confirms that the ego
+status is a strong shortcut on this data~\cite{egostatus}. We also train the probe
+with no input at all (it learns the marginal distribution of trajectories) and
+with the ego status and command only.
+
+Before working on real data we checked the flow-matching denoiser on synthetic
+2D curves whose distribution is known in closed form. It reproduced the fan of
+target curves, and per-channel normalization of the targets was needed to avoid
+wavy and overshooting samples. For the same reason every dimension of the
+trajectory code is standardized with training statistics on real data.

@@ -17,3 +17,4 @@
 [10-29] Full navtest (official devkit): fast regression planner (wm11_ctx + ego status, 1.8 min training) EPDMS 0.881, vocabulary planner 0.857, diffusion probe mean 0.788 (outputs/16_fast_planner)
 [10-29] Hydra-MDP-style PDM sub-score distillation (targets for 5k navtrain scenes) does not improve the fast planner: 0.872-0.877 vs 0.863-0.885 across seeds (outputs/16_fast_planner)
 [10-29] Diffusion probe with wm11 + ego status + command: navtest EPDMS 0.810 (sample mean, best of 4 0.900) vs 0.788 image only; navhard 0.406 vs 0.367; gain is mostly EC (outputs/15_planner)
+[10-29] All planned experiments finished; results summary in docs/26-10-29-results-summary.md; LaTeX report rewritten around the NAVSIM-protocol study (report/report-latex)

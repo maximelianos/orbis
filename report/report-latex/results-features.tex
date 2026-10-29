@@ -1,0 +1,194 @@
+\section{What the Features Know}
+\label{sec:features}
+
+\subsection{Encoder comparison}
+\label{sec:encoders}
+
+All probes in this section see only images, use the same small probe, and are
+trained on all 92k scenes for 100k steps. Only the input changes.
+Table~\ref{tab:encoder-results} gives the results, with the no-input and
+ego-status probes as reference points.
+
+\begin{table}[htbp]
+\centering
+\caption{Image encoders under the same probe. Validation: 2000 scenes of the
+held-out logs, 16 samples, final checkpoint. navtest: all 12,146 scenes, 32
+samples, for the runs we evaluated offline. Energy and
+displacements in metres, lower is better.}
+\label{tab:encoder-results}
+\begin{tblr}{colspec={lrrrrr}, row{1}={font=\bfseries}, cells={font=\small}}
+\toprule
+Input & Val energy & navtest energy & Val minADE & ADE of mean & Dispersion \\
+\midrule
+none                             & 13.10 & 13.58 & 1.95 & 5.91 & 0.92 \\
+$q_{\text{rec}}$                 & 7.34  &       & 1.01 & 3.26 & 0.94 \\
+$q_{\text{sem}}$ + $q_{\text{rec}}$ & 5.62 &     & 0.82 & 2.47 & 0.92 \\
+$q_{\text{sem}}$                 & 5.55  & 6.08  & 0.79 & 2.46 & 0.93 \\
+DINOv2                           & 5.37  & 5.90  & 0.79 & 2.36 & 0.90 \\
+V-JEPA 2                         & 4.66  & 4.88  & 0.68 & 1.99 & 0.90 \\
+WM23                             & 3.70  & 4.06  & 0.58 & 1.56 & 0.90 \\
+WM11-ctx                         & \textbf{2.91} & \textbf{3.06} & \textbf{0.46} & \textbf{1.19} & 0.88 \\
+\midrule
+ego status                       & 2.73  &       & 0.45 & 1.01 & 0.90 \\
+ego status + command             & 2.39  & 2.48  & 0.40 & 0.90 & 0.91 \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+The Orbis world model is the best image encoder by a wide margin. Block 11 at the
+last observed frame lowers the energy score by 37\% against V-JEPA~2 and by 46\%
+against DINOv2. The ranking follows how much temporal context the encoder
+processes and what it was trained for: per-frame encoders ($q_{\text{sem}}$,
+DINOv2) are worst, a general video encoder (V-JEPA~2) is better, and a video model
+trained to predict driving is best. The tokenizer latents are much weaker than
+the world model built on them, so the world model adds the information itself,
+by relating the frames to each other.
+
+Two smaller results explain the gap between the per-frame encoders. The detail
+latent $q_{\text{rec}}$ is much worse than $q_{\text{sem}}$ and adds nothing to
+it, as expected for a latent trained for pixel reconstruction. And DINOv2's small
+lead over $q_{\text{sem}}$ comes from width: reduced to the same 16 channels,
+DINOv2 is slightly worse (5.81 against 5.55), which fits the fact that
+$q_{\text{sem}}$ is trained to imitate DINOv2. For per-frame encoders, more
+history also helps: $q_{\text{sem}}$ of one, two and four frames gives 6.10, 5.83
+and 5.55, since speed is only visible as a change between frames.
+
+The dispersion is between 0.88 and 0.94 for every input. At full data the encoder
+changes how accurate the distribution is, not how wide it is relative to its
+error.
+
+The ego status alone still beats every image encoder on the energy score. This
+is the shortcut of Section~\ref{sec:baselines}: speed and acceleration explain
+most of the variance of a 4\,s trajectory. Section~\ref{sec:planning} shows that
+it does not carry over to driving quality.
+
+\subsection{Where in the world model}
+\label{sec:depth}
+
+Figure~\ref{fig:depth} shows the energy score of probes on six blocks of the world
+model, for both token positions. Three results stand out.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.72\textwidth]{../pictures/wm_depth.png}
+\caption{Validation energy of the probe on world-model features against block
+index, for the next-frame slot and the last observed frame. Dashed lines are the
+other encoders and the ego-status probe (without command).}
+\label{fig:depth}
+\end{figure}
+
+The middle of the network is best. The energy falls steeply up to block 11 and
+then rises slowly. The last blocks are closer to the next-frame prediction that
+the model must output, and keep less of the driving state.
+
+The last observed frame beats the next-frame slot at every depth, by 0.4 to 0.8 in
+energy. We expected the opposite, since the next-frame slot is where the model
+forms its guess of the future. But at $\tau=1$ that slot starts as pure noise, and
+after one forward pass it holds a mix of noise and prediction. The model keeps
+its estimate of the motion in the context it reads from.
+
+Every block from 7 on beats every other encoder, and even block 3 beats
+$q_{\text{sem}}$ and DINOv2. This rules out the possibility that one lucky layer
+explains the result. The whole world model holds more about the future
+trajectory than the image encoders.
+
+\subsection{Linear read-out}
+\label{sec:linear}
+
+The probe is nonlinear and generative. To see what is directly available, we
+fitted ridge regressions from the features (pooled to $3\times4$ cells, so every
+input has 768 numbers) to quantities of the current scene and its future, and
+scored them on the validation logs (Table~\ref{tab:linear},
+Figure~\ref{fig:linear}).
+
+\begin{table}[htbp]
+\centering
+\caption{Linear read-out from 768 feature numbers, $R^2$ on validation logs.
+Command is the 3-class accuracy (majority class 0.63). Progress, lateral offset
+and heading are those of the pose at 4\,s.}
+\label{tab:linear}
+\begin{tblr}{colspec={lrrrrrr}, row{1}={font=\bfseries}}
+\toprule
+Feature & Speed & Accel. & Progress & Lateral & Heading & Command \\
+\midrule
+$q_{\text{rec}}$  & 0.36 & 0.24 & 0.32 & 0.41 & 0.38 & 0.86 \\
+$q_{\text{sem}}$  & 0.59 & 0.40 & 0.56 & 0.48 & 0.45 & 0.89 \\
+DINOv2, 16 ch.    & 0.57 & 0.39 & 0.54 & 0.48 & 0.45 & 0.89 \\
+V-JEPA 2          & 0.87 & 0.48 & 0.74 & 0.75 & 0.66 & 0.91 \\
+WM11              & 0.90 & 0.57 & 0.80 & 0.75 & 0.67 & 0.91 \\
+WM11-ctx          & \textbf{0.95} & \textbf{0.68} & \textbf{0.87} & \textbf{0.84} & \textbf{0.74} & 0.91 \\
+WM23-ctx          & 0.94 & 0.50 & 0.84 & 0.81 & 0.72 & 0.92 \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../pictures/linear_probe_depth.png}
+\caption{Linear read-out $R^2$ against world-model block, for the two token
+positions. Dashed lines are the other encoders.}
+\label{fig:linear}
+\end{figure}
+
+The linear results agree with the probe. The world model holds the ego speed
+almost perfectly ($R^2=0.95$), against 0.87 for V-JEPA~2 and 0.59 for
+$q_{\text{sem}}$. Acceleration is the hardest quantity and peaks sharply at
+block 11 (0.68), falling to 0.50 at the last block. So the middle of the network
+holds the most dynamics. The last observed frame is the better position for every
+quantity at every depth. The driving command is the only target where all
+encoders are close (0.86 to 0.92), because the route is mostly not visible in the
+front camera. This is also why giving the probe the command helps
+(Section~\ref{sec:planning}).
+
+\subsection{Generalization}
+\label{sec:generalization}
+
+\paragraph{Held-out logs against navtest.}
+All model selection used held-out training logs. The navtest energy is 3 to 10\%
+higher than the validation energy for every probe, and the ranking of the probes
+is the same on both (Table~\ref{tab:encoder-results}). So the log-level split is a
+reliable stand-in for the test set, and the conclusions above are not tuned to
+the validation data.
+
+\paragraph{Unseen city.}
+A $q_{\text{sem}}$ probe trained without Singapore, the only left-hand-traffic
+city, is 50\% worse there than the probe trained on all cities (energy 9.43
+against 6.31). On the US cities the two are equal. The dispersion in Singapore
+falls from 0.86 to 0.66. The model does not widen its distribution on the
+unfamiliar city. It samples with the usual width around the wrong trajectory.
+
+\paragraph{Unseen combinations.}
+A harder test is whether the probe combines factors it has seen separately. We
+removed two (city, command) pairs from training: left turns in Singapore and right
+turns in Boston. The model still sees left turns in the US cities and Singapore
+scenes going straight or right. Both models get the command as an input.
+
+\begin{table}[htbp]
+\centering
+\caption{Compositional test, $q_{\text{sem}}$ + command probe, 32 samples on
+validation scenes of the held-out pairs (314 Singapore-left, 260 Boston-right).
+The reference model saw these pairs in training.}
+\label{tab:compositional}
+\begin{tblr}{colspec={llrrr}, row{1}={font=\bfseries}}
+\toprule
+Pair & Model & Energy & minADE & Spread \\
+\midrule
+Singapore, left & reference & 4.51 & 0.57 & 2.67 \\
+Singapore, left & held out  & 9.11 & 1.39 & 2.58 \\
+Boston, right   & reference & 6.40 & 0.91 & 2.57 \\
+Boston, right   & held out  & 7.57 & 1.11 & 2.50 \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+On the rest of the validation set the held-out model is only 5\% worse, about
+what the removed data costs. On Singapore left turns its energy doubles
+(Table~\ref{tab:compositional}). A left turn in Singapore is the short near-side
+turn, which has the geometry of a right turn in the US, so knowing US left turns
+does not help. Boston right turns look like right turns in the other US cities
+and lose only 18\%. The spread of the samples is unchanged, so the model gives no
+sign that the input is new to it. Longer training makes this worse: the energy
+on the held-out pairs is best at 40k steps (7.64) and rises to 8.41 at 100k,
+while the reference model keeps improving. The probe fits the combinations it
+has seen more and more tightly, the same trend as the collapse in
+Section~\ref{sec:collapse}.

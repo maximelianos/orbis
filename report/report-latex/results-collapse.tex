@@ -1,0 +1,209 @@
+\section{Why the Predicted Distribution Collapses}
+\label{sec:collapse}
+
+\subsection{The observation}
+\label{sec:collapse-observation}
+
+We first reproduced the earlier problem in the new protocol. The probe on
+$q_{\text{sem}}$ was trained on a random subset of 10k training scenes. Its
+validation flow-matching loss is lowest at about 40k of 100k steps and then
+rises, while the training error keeps falling. The validation dispersion drops
+from 0.96 to 0.87, so the samples become narrower than the error justifies. On
+the full 92k scenes the same drift exists but is much slower, and validation
+still improves at 100k steps.
+
+Before reading this as collapse, two other explanations had to be ruled out: the
+sampler, and the size of the probe relative to the data.
+
+\subsection{Part of the narrowing is the sampler}
+\label{sec:euler}
+
+Section~\ref{sec:flow-matching} showed that a single Euler step sends every
+sample to the conditional mean. If 10 steps are still too coarse, part of this
+effect remains, and the samples look narrower than the learned distribution.
+Figure~\ref{fig:euler} confirms this on the best image-only probe (WM11-ctx). With
+one step the dispersion is 0.37 and the mean error over samples looks best, while
+best-of-32 is worst. The spread recovers with more steps, and the energy score
+stops improving at 10 to 20 steps (2.88 at 10, 2.86 at 50).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../pictures/euler_steps.png}
+\caption{Effect of the number of Euler steps at sampling time, WM11-ctx probe,
+9,675 validation scenes, 32 samples. Few steps pull the samples to the
+conditional mean: the mean error over samples looks good, but best-of-32 and the
+energy score are bad and the dispersion is far below 1.}
+\label{fig:euler}
+\end{figure}
+
+We then re-evaluated every checkpoint of the 10k-scene run with 50 steps
+(Figure~\ref{fig:collapse-curves}, blue). With 50 steps the dispersion goes only
+from 1.03 to 0.95, and $\text{minADE}_{32}$ improves from 0.86 to 0.67\,m and
+stays there. So for the small probe most of the narrowing we saw was a sampling
+artefact, and the real narrowing during training is mild. This also means that a
+model judged by mean ADE with few sampling steps will look unimodal whatever it
+has learned.
+
+\subsection{Real collapse needs capacity}
+\label{sec:capacity}
+
+The small probe has 19k parameters. A wider probe (hidden width 64, about 290k
+parameters) on the same 10k scenes collapses for real, with any number of steps
+(Figure~\ref{fig:collapse-curves}, red). At 6k steps it is the best
+$q_{\text{sem}}$ model of all, with a validation energy of 5.65. Then
+$\text{minADE}_{32}$ grows from 0.65 to 2.06\,m and the dispersion falls from 0.91
+to 0.16, even with 50 steps. On training scenes $\text{minADE}_{16}$ goes to
+0.14\,m. The model has stopped modelling a distribution and returns one
+trajectory per scene, the future of a training scene that looks similar.
+Figure~\ref{fig:collapse-samples} shows this. The fan of samples at 5k steps
+becomes a single line at 100k, and in the first row that line turns left where
+the car turned right.
+
+The error of the sample mean does not show any of this. It stays the best of all
+models (2.6\,m) during the whole collapse. A model selected by mean displacement
+error would be the collapsed one, which is why we select on the energy score.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../pictures/collapse_curves.png}
+\caption{Validation metrics of the $q_{\text{sem}}$ probe on 10k training scenes
+over training, re-evaluated on all 9,675 validation scenes with 32 samples. Blue:
+small probe (width 16). Red: wide probe (width 64). Solid: 10 Euler steps,
+dashed: 50. The wide probe collapses with either number of steps. The small
+probe stays close to calibration with 50 steps.}
+\label{fig:collapse-curves}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.78\textwidth]{../pictures/collapse_samples_d64.png}
+\caption{Samples of the wide probe on validation scenes at 5k, 20k and 100k
+training steps (blue: 32 samples, black: logged future, forward is up, units in
+metres). The fan narrows to a single trajectory per scene, which is sometimes on
+the wrong side (row 1).}
+\label{fig:collapse-samples}
+\end{figure}
+
+Table~\ref{tab:capacity} shows that capacity moves the probe along one axis. More
+capacity gives better early accuracy and an earlier and deeper collapse. A width-8
+probe never leaves calibration, but it never becomes accurate either. On the full
+92k scenes the wide probe still narrows (dispersion 0.67) but stays the most
+accurate $q_{\text{sem}}$ probe. So reducing capacity prevents the collapse only
+by underfitting. More data prevents it without that cost.
+
+\begin{table}[htbp]
+\centering
+\caption{Probe capacity, $q_{\text{sem}}$ input, final values after 100k steps
+on 2000 validation scenes with 16 samples and 10 Euler steps. Energy and minADE
+in metres.}
+\label{tab:capacity}
+\begin{tblr}{colspec={llrrrrr}, row{1}={font=\bfseries}, cells={font=\small}}
+\toprule
+Width & Scenes & Params & Best energy (step) & Final energy & minADE & Dispersion \\
+\midrule
+8  & 10k & 5k   & 7.64 (100k) & 7.63 & 1.40 & 1.02 \\
+16 & 10k & 19k  & 5.95 (48k)  & 6.04 & 0.91 & 0.87 \\
+64 & 10k & 290k & 5.65 (6k)   & 8.33 & 2.46 & 0.05 \\
+16 & 92k & 19k  & 5.56 (100k) & 5.55 & 0.79 & 0.93 \\
+64 & 92k & 290k & 4.54 (42k)  & 4.69 & 0.78 & 0.67 \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+\subsection{The onset of memorization grows with the data}
+\label{sec:scaling}
+
+If the collapse is memorization, theory makes a sharp prediction: the training
+time at which it starts should grow linearly with the number of training scenes
+$n$~\cite{bonnaire,favero}. We trained the same small probe on 2.5k, 5k, 10k,
+20k, 46k and 92k scenes (Figure~\ref{fig:scaling}, Table~\ref{tab:scaling}).
+
+The validation loss reaches its minimum at 8k, 12k and 40k steps for 2.5k, 5k and
+10k scenes. For 20k scenes and more it does not turn within 100k steps. A
+log-log fit over the three sizes where the minimum is reached gives a slope of
+1.16 for the loss minimum, 1.13 for the best energy and 0.90 for the step where
+the gap between training and validation energy starts to grow. All three are
+close to the predicted slope of 1. The smaller the training set, the earlier the
+validation loss turns and the further the dispersion falls below 1, down to 0.63
+for 2.5k scenes. The extrapolated onset for 20k scenes is about 80k steps, just
+beyond what the run shows.
+
+So the law holds for a small conditional trajectory model on real driving data,
+not only for the image and language models it was shown for. With only three
+uncensored points the
+slope is a rough number. But the order is the same in every metric: less data
+means earlier and stronger collapse.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../pictures/data_scaling.png}
+\caption{Small $q_{\text{sem}}$ probe trained on $n$ scenes. From left: energy
+score (solid validation, dotted training), growth of the validation-training
+gap, validation dispersion, and the onset step against $n$ on log-log axes.
+Crosses mark sizes where the onset is not reached within 100k steps.}
+\label{fig:scaling}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{Onset of memorization against training-set size, small
+$q_{\text{sem}}$ probe, 100k steps.}
+\label{tab:scaling}
+\begin{tblr}{colspec={rrrrr}, row{1}={font=\bfseries}}
+\toprule
+Scenes & Val loss minimum at & Final val energy & Final dispersion & Val / train minADE \\
+\midrule
+2,500  & 8k          & 8.55 & 0.63 & 1.57 / 0.65 \\
+5,000  & 12k         & 6.59 & 0.82 & 1.00 / 0.68 \\
+10,000 & 40k         & 6.04 & 0.87 & 0.91 / 0.75 \\
+20,000 & not reached & 5.79 & 0.91 & 0.85 / 0.73 \\
+46,000 & not reached & 5.66 & 0.92 & 0.83 / 0.75 \\
+92,381 & not reached & 5.55 & 0.93 & 0.79 / 0.74 \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+\subsection{A polynomial code does not prevent collapse}
+\label{sec:codec}
+
+A natural idea is to restrict the output to smooth trajectories, so that the
+model cannot fit the training futures in detail. We compared polynomial codes of
+order 2, 3 and 6 with the raw 24 numbers, on 10k scenes where the collapse is
+visible (Table~\ref{tab:codec}).
+
+\begin{table}[htbp]
+\centering
+\caption{Trajectory code, $q_{\text{sem}}$, small probe, 10k scenes, final
+validation values.}
+\label{tab:codec}
+\begin{tblr}{colspec={lrrrr}, row{1}={font=\bfseries}}
+\toprule
+Code & Size & Val energy & Val minADE & Dispersion \\
+\midrule
+polynomial, order 2 & 6  & 6.00 & 0.93 & 0.82 \\
+polynomial, order 3 & 9  & 6.04 & 0.91 & 0.87 \\
+polynomial, order 6 & 18 & 8.25 & 1.58 & 1.10 \\
+raw poses           & 24 & 7.07 & 2.17 & 1.14 \\
+\bottomrule
+\end{tblr}
+\end{table}
+
+Low-order polynomials are much better targets. Raw poses have no notion of
+smoothness, so independent errors per pose give jagged paths, and the order-6
+basis is badly conditioned, so small errors in the code become large errors in
+the path. But the low-order codes still narrow below calibration, order 2 even
+slightly more than order 3. Raw poses and order 6 avoid the collapse only because
+they are not fitted well enough to collapse. A simpler target makes the
+distribution easier to learn, and that includes the memorized one.
+
+\subsection{Summary}
+
+The narrowing of the predicted distribution has two causes. One is a measurement
+artefact: coarse ODE integration pulls the samples to the mean. The other is
+memorization, which needs a probe that can fit its training set and appears
+later the more data there is. Neither the features nor the trajectory code cause
+it. In practice it is avoided by training on all 92k scenes, sampling with at
+least 10 to 20 steps, and selecting checkpoints on the validation energy score.
+All results in the next sections follow these rules. Every probe there has a
+dispersion between 0.88 and 0.95 on the validation logs. Lower values appear only
+on inputs unlike the training data (Section~\ref{sec:generalization}).

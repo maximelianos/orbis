@@ -1,4 +1,7 @@
-# Progress 2026-10-27 (temporary, work in progress)
+# Progress 2026-10-27 (superseded)
+
+All queues below finished by 2026-10-29. Current state and results:
+docs/26-10-29-results-summary.md.
 
 Plan and protocol: docs/26-10-27-research-plan.md. One-line log: docs/log.md.
 
