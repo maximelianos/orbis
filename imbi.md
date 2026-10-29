@@ -5,7 +5,7 @@ You cannot run on the GPU directly. You need to connect to tmux: "tmux -S /tmp/t
 
 Use python only through a miniconda env "navsim". You cannot create new envs.
 Run commands through tmux only.
-Make sure your scripts never consume more than 20 GB RAM.
+Make sure your scripts never consume more than 40 GB CPU RAM in total.
 Make sure you don't run out of disk space.
 Run at most 3 concurrent runs not to overload the CPUs.
 Don't run in background - run in separate tmux windows so I can see the progress.

@@ -31,7 +31,7 @@ _EPISODES = OrderedDict()   # episode -> render state (LRU)
 
 # Rendering options, set once from the client's SETTINGS dict via viewer_config.
 _OPTS = {
-    "config": "exp_navsim/config.yaml",
+    "config": "exp_navsim/episode/config.yaml",
     "cameras": "front",       # "front" | "surround"
     "bev": True,
     "bev_size": 512,
@@ -130,7 +130,7 @@ def _scan():
     """
     import numpy as np
     from exp_navsim.data.navsim_base import in_split
-    from exp_navsim.visualize_dataset import trajectory_stats, MIN_DISPLACEMENT
+    from exp_navsim.viz.visualize_dataset import trajectory_stats, MIN_DISPLACEMENT
 
     ds = _dataset()
     if "stats" not in _VIEWER:
@@ -193,7 +193,7 @@ def viewer_filter(min_distance=0.0, min_angle=0.0, min_frames=0, split="all"):
 # --------------------------------------------------------------------------- #
 # Model
 # --------------------------------------------------------------------------- #
-def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
+def viewer_model(ckpt, config="exp_navsim/episode/config.yaml", split="all"):
     """Load a checkpoint plus the latent cache, cached in the kernel.
 
     The viewer indexes episodes through the *long* dataset while the model is fed
@@ -214,7 +214,7 @@ def viewer_model(ckpt, config="exp_navsim/config.yaml", split="all"):
 
     from evaluate.checkpoint import resolve_checkpoint
     from exp_navsim.data.navsim_base import in_split
-    from exp_navsim.model import NavsimTrajectoryModel
+    from exp_navsim.episode.model import NavsimTrajectoryModel
 
     if _VIEWER.get("ckpt") != (ckpt, split):
         _dataset()                           # binds cfg + cache to this config first
@@ -301,7 +301,7 @@ def _window_batch(state, starts, total_len):
     import numpy as np
     import torch
 
-    from exp_navsim.data.collate import pad_collate
+    from exp_navsim.episode.collate import pad_collate
     from exp_navsim.data.navsim_base import traj_to_velocity
 
     model = _VIEWER["model"]
@@ -411,7 +411,7 @@ def _render_bev_base(episode, size):
     from matplotlib.figure import Figure
 
     from exp_navsim.data.bev_extract import extract_bev
-    from exp_navsim.draw_bev import draw_bev_distribution
+    from exp_navsim.viz.draw_bev import draw_bev_distribution
 
     # anchor=0: the GT path from poses_to_local_traj is rooted at episode frame 0
     # in both origin and heading, so BEV and path share one frame with no

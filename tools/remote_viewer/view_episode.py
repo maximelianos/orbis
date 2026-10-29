@@ -102,7 +102,7 @@ SETTINGS = {
     "token": os.environ.get("JUPYTER_TOKEN", ""),
     "kernel_id": None,                  # None = reuse the first running kernel
     "repo": "/scratch/local/velikanov/work/orbis",
-    "config": "exp_navsim/config.yaml",
+    "config": "exp_navsim/episode/config.yaml",
 
     # --- episode filter (same criteria as test_model.py's EPISODE_FILTERS) ---
     "min_distance": 20.0,               # m driven
@@ -560,7 +560,7 @@ def connect(settings):
                           settings["kernel_id"]).connect()
     print(f"kernel {kernel.kernel_id}")
 
-    # chdir so the kernel resolves "exp_navsim/config.yaml" like the shell does,
+    # chdir so the kernel resolves "exp_navsim/episode/config.yaml" like the shell does,
     # and put the repo on sys.path in case the kernel was started elsewhere.
     repo = settings["repo"]
     kernel.execute(f"import os, sys\n"

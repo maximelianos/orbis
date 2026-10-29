@@ -1,0 +1,44 @@
+# Trajectory probe on cached encoder features, NAVSIM protocol:
+# 4 history frames (2 Hz) in, 8 poses over 4 s out.
+#   python -m exp_navsim.train -c exp_navsim/configs/probe.yaml --name <run> [key=value ...]
+seed: 0
+
+data:
+  index: data/navsim_index/navtrain.pkl
+  features: [q_sem]          # cached names in data/features/<split>/, concatenated over channels; [] = none
+  feature_dir: data/features
+  history: 4                 # newest history frames read for per-frame features
+  channels: null             # keep the first k (PCA) channels of every feature
+  val_fraction: 0.1          # fraction of LOGS held out
+  cities: null               # e.g. [us-ma-boston, us-pa-pittsburgh-hazelwood]
+  holdout: null              # e.g. [[us-nv-las-vegas-strip, left]]: out of training, own val loader
+  max_scenes: null           # random subset of the training scenes
+  seed: 0
+  batch_size: 256
+  val_scenes: 2000           # scenes per validation loader
+  num_workers: 4
+
+model:
+  hidden_dim: 16
+  image_tokens: 16           # tokens the spatial block pools per frame
+  ff_dim: 32
+  num_heads: 2
+  depth: 4
+  dropout: 0.0
+  use_status: false          # ego velocity + acceleration as a token
+  use_command: false         # driving command as a token
+  codec: poly                # raw | poly
+  poly_order: 3
+  sigma_min: 1.0e-5
+  num_diffusion_steps: 10
+  num_val_samples: 16
+  lr: 5.0e-4
+  weight_decay: 0.01
+  warmup_steps: 500
+  min_lr_multiplier: 0.1
+
+trainer:
+  max_steps: 100000
+  val_every: 2000
+  ckpt_every: 5000
+  precision: 32-true

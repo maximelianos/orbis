@@ -1,6 +1,6 @@
-"""exp_navsim: self-contained NAVSIM long-episode trajectory-prediction pipeline.
+"""Probing frozen image and world-model features with a trajectory flow-matching model on NAVSIM.
 
-See exp_navsim/readme.md for the overall design. Everything here is driven by a
-single config (exp_navsim/config.yaml) whose subkeys separate the logic
-(data_long / cache / data_latent / model / val / viz).
+See README.md. data/ scenes and features, encoders/ frozen encoders and caching,
+models/ the probe, eval/ metrics and EPDMS, viz/ drawing, episode/ the earlier
+whole-episode probe.
 """

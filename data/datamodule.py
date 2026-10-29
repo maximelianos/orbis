@@ -29,7 +29,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
         drop_last_train: Drop last incomplete train batch.
         shuffle_train: Shuffle training data.
         collate_fn: Dotted path to a collate function (e.g.
-            "exp_navsim.data.collate.pad_collate" for variable-length episodes);
+            "exp_navsim.episode.collate.pad_collate" for variable-length episodes);
             None uses the default PyTorch collate.
     """
     def __init__(self, batch_size, val_batch_size=None, train=None, validation=None, test=None,

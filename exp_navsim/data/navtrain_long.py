@@ -183,7 +183,7 @@ def _main():
     from omegaconf import OmegaConf
     from exp_navsim.data.navsim_base import NavsimLongBase
 
-    cfg = OmegaConf.load("exp_navsim/config.yaml")
+    cfg = OmegaConf.load("exp_navsim/episode/config.yaml")
     ds = NavsimLongBase.from_config(cfg)
     print(f"episodes: {len(ds)}")
     s = ds[0]

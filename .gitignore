@@ -45,3 +45,11 @@ data/navtrain_episode_index.pkl
 
 nuReasoning/
 nuReasoning
+
+# NAVSIM probe data (rebuilt by exp_navsim/data/*.py, encoders/cache_features.py)
+data/navsim_index/
+data/features/
+data/frames/
+data/navtrain_latents*/
+
+outputs/

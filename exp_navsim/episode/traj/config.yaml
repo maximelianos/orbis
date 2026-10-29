@@ -1,0 +1,129 @@
+# =========================================================================== #
+# python train_nuplan.py -c exp_navsim/episode/traj/config.yaml --max_steps 200000 --logdir logs_navsim_traj
+#
+# python -m exp_navsim.episode.test_model --config exp_navsim/episode/traj/config.yaml --ckpt logs_navsim_traj --num 20
+# =========================================================================== #
+#
+# Trajectory-only baseline: exp_navsim/episode/config.yaml's model and data, but the
+# denoiser sees only the first context_traj frames of the window's trajectory,
+# no images. Uses the same latent cache as exp_navsim/episode/config.yaml; the latents
+# are loaded but never read by the model.
+
+dataset: navtrain
+
+data_long:
+  navhard:
+    data_root: /scratch/global/velikanm/navsim/download/navhard_two_stage
+    size: 256
+    stored_data_frame_rate: 2
+    frame_rate: 2
+    front_camera: CAM_F0
+    load_surround: true
+    split: all
+    val_fraction: 0.1
+
+  navtrain:
+    logs_root: navsim/download/trainval_navsim_logs/trainval
+    sensor_root: navsim/download/trainval_sensor_blobs/trainval
+    index_cache: data/navtrain_episode_index.pkl
+    size: 256
+    stored_data_frame_rate: 2
+    frame_rate: 2
+    front_camera: CAM_F0
+    load_surround: true
+    min_frames: 5
+    split: all
+    val_fraction: 0.1
+
+cache:
+  dir:
+    navhard:  data/navsim_latents
+    navtrain: data/navtrain_latents
+  chunk: 100
+  encoder:
+    exp_dir: logs_tk/tokenizer_288x512
+    ckpt: checkpoints/last.ckpt
+    config: config.yaml
+
+model:
+  base_learning_rate: 5.0e-4
+  adjust_learning_rate: false
+  precision: 16-mixed
+  grad_acc_steps: 1
+  resume_traj_ae_only: false        # --resume loads only traj_ae.* and traj_norm.*
+  target: exp_navsim.episode.traj.model.TrajContextModel
+  params:
+    # Known leading frames of each window (4 = 1.5 s at 2 Hz, i.e. 3 velocity
+    # steps). The prediction starts at frame context_traj.
+    context_traj: 4
+    # Only read by test_model.py (first and last context view) and the remote
+    # viewer; the model sees no images.
+    context_images: 4
+    hidden_dim: 16
+    ff_dim: 32
+    num_heads: 2
+    depth: 4                         # ContextTransformer blocks in the denoiser
+    sigma_min: 1.0e-5
+    warmup_steps: 0
+    min_lr_multiplier: 0.1
+    num_diffusion_steps: 10
+    num_val_samples: 50
+    # Future frames after the context that are predicted, trained and scored
+    # (8 = 4 s at 2 Hz). null = the whole episode.
+    max_pred_len: 8
+
+    trajectory: poly                  # vae | poly | pure, see exp_navsim/episode/config.yaml
+
+    traj_ae:
+      hidden_dim: 16
+      latent_dim: 4
+      enc_layers: 2
+      dec_blocks: 3
+      kl_weight: 1.0e-3
+      pos_weight: 1.0
+    traj_poly:
+      order: 4
+      time_scale: 10.0
+    traj_pure:
+      max_frames: 64
+
+check_val_every_n_epoch: 5
+
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 100
+    num_workers: 1
+    collate_fn: exp_navsim.episode.collate.pad_collate
+
+    train:
+      target: exp_navsim.episode.buffer.BufferDataset
+      params:
+        dataset_length: 100000
+        initial_buffer_size: 100
+        max_buffer_size: 20000
+        replace_rate: 4
+        replace_count: 10
+        source_dataset:
+          target: exp_navsim.episode.latent_dataset.NavsimLatentDataset
+          params:
+            cache_dir: data/navtrain_latents
+            num_frames: 0
+            context_images: 1       # latents are unused here, read as few as possible
+            split: train
+            val_fraction: 0.1
+            latent_key: encoded_q_sem
+            deterministic: false
+            # >= context_traj + max_pred_len, so every window has a full future.
+            random_start_min_frames: 12
+
+    validation:
+      target: exp_navsim.episode.latent_dataset.NavsimLatentDataset
+      params:
+        cache_dir: data/navtrain_latents
+        num_frames: 0
+        context_images: 1
+        split: val
+        val_fraction: 0.1
+        latent_key: encoded_q_sem
+        deterministic: true

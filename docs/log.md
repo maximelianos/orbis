@@ -1,0 +1,19 @@
+# Log
+
+[10-27] NAVSIM-protocol index: 102,056 navtrain scenes with all 4 history images (old episode pipeline used 9,577), 151k distinct frames (outputs/00_index)
+[10-27] Restructured exp_navsim into data/ encoders/ models/ eval/ viz/ episode/ (old whole-episode probe), loose top-level scripts into tools/ scripts/slurm/ legacy/
+[10-27] Collapse reproduced in NAVSIM protocol: q_sem probe on 10k scenes, val dispersion 0.96 -> 0.87, val loss minimum at 40k of 100k steps (outputs/02_collapse)
+[10-27] Baselines on held-out logs: constant velocity ADE 2.76, nearest ego-status lookup ADE 1.26 (outputs/03_baselines)
+[10-28] Memorization onset grows linearly with training-set size (log-log slope 1.16, n = 2.5k-10k; outputs/04_data_scaling)
+[10-28] Capacity: D64 probe on 10k scenes collapses to one trajectory per scene (val dispersion 0.05); D8 stays calibrated but underfits (outputs/06_capacity)
+[10-28] Polynomial codec (order 2-3) beats raw poses and order 6, but does not prevent collapse (outputs/05_codec)
+[10-28] Encoders: world-model features beat DINOv2, V-JEPA 2 and the tokenizer latents; best = block 11, last observed frame (outputs/07_encoders, 08_wm_blocks)
+[10-28] Compositional (unseen city x command) and unseen-city tests: +50-57% energy and overconfident samples (outputs/09, 10)
+[10-28] 1-step Euler sampling collapses to the conditional mean (dispersion 0.37); 10 steps is enough (outputs/12_efficiency)
+[10-28] Collapse check with 50 Euler steps: small probe stays near calibrated (0.95), D64 probe collapses for real (dispersion 0.91 -> 0.16, minADE 0.65 -> 2.06) (outputs/02_collapse)
+[10-28] Linear probes: WM last-frame tokens hold ego speed with R^2 0.95 (V-JEPA 2 0.87, q_sem 0.59); acceleration peaks at block 11 (outputs/13_linear_probes)
+[10-28] Fast EPDMS proxy: batched PDM scoring matches the official CSV exactly; 500 random navtest scenes give Spearman 0.98 vs full navtest (outputs/16_fast_planner)
+[10-28] Prediction-only planner (no diffusion, 1-2 min training): wm11 + ego status + 256-trajectory vocabulary reaches EPDMS 0.885 on the 500 subset, above PDM-Closed 0.871 and the diffusion probe 0.782; constant velocity 0.209 (outputs/16_fast_planner)
+[10-29] Full navtest (official devkit): fast regression planner (wm11_ctx + ego status, 1.8 min training) EPDMS 0.881, vocabulary planner 0.857, diffusion probe mean 0.788 (outputs/16_fast_planner)
+[10-29] Hydra-MDP-style PDM sub-score distillation (targets for 5k navtrain scenes) does not improve the fast planner: 0.872-0.877 vs 0.863-0.885 across seeds (outputs/16_fast_planner)
+[10-29] Diffusion probe with wm11 + ego status + command: navtest EPDMS 0.810 (sample mean, best of 4 0.900) vs 0.788 image only; navhard 0.406 vs 0.367; gain is mostly EC (outputs/15_planner)

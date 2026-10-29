@@ -1,6 +1,6 @@
 """Extract the NAVSIM birds-eye-view context (map + agents) and GT trajectory.
 
-    python -m exp_navsim.data.bev_extract --config exp_navsim/config.yaml --num 3
+    python -m exp_navsim.data.bev_extract --config exp_navsim/episode/config.yaml --num 3
 
 This is an independent, minimal version of what `visualize_cv_agent.py` does via
 the NAVSIM devkit `SceneLoader`: instead of building a full `Scene` (which loads
@@ -148,7 +148,7 @@ def _main():
     from exp_navsim.data.navsim_base import NavsimLongBase
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="exp_navsim/config.yaml")
+    ap.add_argument("--config", default="exp_navsim/episode/config.yaml")
     ap.add_argument("--num", type=int, default=3)
     args = ap.parse_args()
 
