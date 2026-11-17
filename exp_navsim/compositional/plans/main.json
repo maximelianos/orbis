@@ -1,0 +1,438 @@
+[
+{
+"name": "ref_s0",
+"holdout": [],
+"seed": 0
+},
+{
+"name": "hold_sg_s0",
+"seed": 0
+},
+{
+"name": "ref_s1",
+"holdout": [],
+"seed": 1
+},
+{
+"name": "hold_sg_s1",
+"seed": 1
+},
+{
+"name": "ref_s2",
+"holdout": [],
+"seed": 2
+},
+{
+"name": "hold_sg_s2",
+"seed": 2
+},
+{
+"name": "fewshot10_sg_s0",
+"fewshot": 10,
+"seed": 0
+},
+{
+"name": "fewshot30_sg_s0",
+"fewshot": 30,
+"seed": 0
+},
+{
+"name": "fewshot100_sg_s0",
+"fewshot": 100,
+"seed": 0
+},
+{
+"name": "fewshot300_sg_s0",
+"fewshot": 300,
+"seed": 0
+},
+{
+"name": "fewshot1000_sg_s0",
+"fewshot": 1000,
+"seed": 0
+},
+{
+"name": "fewshot10_sg_s1",
+"fewshot": 10,
+"seed": 1
+},
+{
+"name": "fewshot30_sg_s1",
+"fewshot": 30,
+"seed": 1
+},
+{
+"name": "fewshot100_sg_s1",
+"fewshot": 100,
+"seed": 1
+},
+{
+"name": "fewshot300_sg_s1",
+"fewshot": 300,
+"seed": 1
+},
+{
+"name": "fewshot1000_sg_s1",
+"fewshot": 1000,
+"seed": 1
+},
+{
+"name": "fewshot10_sg_s2",
+"fewshot": 10,
+"seed": 2
+},
+{
+"name": "fewshot30_sg_s2",
+"fewshot": 30,
+"seed": 2
+},
+{
+"name": "fewshot100_sg_s2",
+"fewshot": 100,
+"seed": 2
+},
+{
+"name": "fewshot300_sg_s2",
+"fewshot": 300,
+"seed": 2
+},
+{
+"name": "fewshot1000_sg_s2",
+"fewshot": 1000,
+"seed": 2
+},
+{
+"name": "div_c0_q1800_sg_s0",
+"command_cities": [],
+"command_quota": 1800,
+"seed": 0
+},
+{
+"name": "div_c1_q1800_sg_s0",
+"command_cities": [
+"us-nv-las-vegas-strip"
+],
+"command_quota": 1800,
+"seed": 0
+},
+{
+"name": "div_c2_q1800_sg_s0",
+"command_cities": [
+"us-nv-las-vegas-strip",
+"us-pa-pittsburgh-hazelwood"
+],
+"command_quota": 1800,
+"seed": 0
+},
+{
+"name": "div_c3_q1800_sg_s0",
+"command_cities": [
+"us-nv-las-vegas-strip",
+"us-pa-pittsburgh-hazelwood",
+"us-ma-boston"
+],
+"command_quota": 1800,
+"seed": 0
+},
+{
+"name": "mirror_sg_s0",
+"mirror": 0.5,
+"seed": 0
+},
+{
+"name": "mirror_ref_s0",
+"holdout": [],
+"mirror": 0.5,
+"seed": 0
+},
+{
+"name": "hold_bos_s0",
+"holdout": [
+[
+"us-ma-boston",
+"right"
+]
+],
+"seed": 0
+},
+{
+"name": "mirror_bos_s0",
+"holdout": [
+[
+"us-ma-boston",
+"right"
+]
+],
+"mirror": 0.5,
+"seed": 0
+},
+{
+"name": "div_c0_q1800_sg_s1",
+"command_cities": [],
+"command_quota": 1800,
+"seed": 1
+},
+{
+"name": "div_c1_q1800_sg_s1",
+"command_cities": [
+"us-nv-las-vegas-strip"
+],
+"command_quota": 1800,
+"seed": 1
+},
+{
+"name": "div_c2_q1800_sg_s1",
+"command_cities": [
+"us-nv-las-vegas-strip",
+"us-pa-pittsburgh-hazelwood"
+],
+"command_quota": 1800,
+"seed": 1
+},
+{
+"name": "div_c3_q1800_sg_s1",
+"command_cities": [
+"us-nv-las-vegas-strip",
+"us-pa-pittsburgh-hazelwood",
+"us-ma-boston"
+],
+"command_quota": 1800,
+"seed": 1
+},
+{
+"name": "mirror_sg_s1",
+"mirror": 0.5,
+"seed": 1
+},
+{
+"name": "mirror_ref_s1",
+"holdout": [],
+"mirror": 0.5,
+"seed": 1
+},
+{
+"name": "hold_bos_s1",
+"holdout": [
+[
+"us-ma-boston",
+"right"
+]
+],
+"seed": 1
+},
+{
+"name": "mirror_bos_s1",
+"holdout": [
+[
+"us-ma-boston",
+"right"
+]
+],
+"mirror": 0.5,
+"seed": 1
+},
+{
+"name": "div_c0_q1800_sg_s2",
+"command_cities": [],
+"command_quota": 1800,
+"seed": 2
+},
+{
+"name": "div_c1_q1800_sg_s2",
+"command_cities": [
+"us-nv-las-vegas-strip"
+],
+"command_quota": 1800,
+"seed": 2
+},
+{
+"name": "div_c2_q1800_sg_s2",
+"command_cities": [
+"us-nv-las-vegas-strip",
+"us-pa-pittsburgh-hazelwood"
+],
+"command_quota": 1800,
+"seed": 2
+},
+{
+"name": "div_c3_q1800_sg_s2",
+"command_cities": [
+"us-nv-las-vegas-strip",
+"us-pa-pittsburgh-hazelwood",
+"us-ma-boston"
+],
+"command_quota": 1800,
+"seed": 2
+},
+{
+"name": "mirror_sg_s2",
+"mirror": 0.5,
+"seed": 2
+},
+{
+"name": "mirror_ref_s2",
+"holdout": [],
+"mirror": 0.5,
+"seed": 2
+},
+{
+"name": "hold_bos_s2",
+"holdout": [
+[
+"us-ma-boston",
+"right"
+]
+],
+"seed": 2
+},
+{
+"name": "mirror_bos_s2",
+"holdout": [
+[
+"us-ma-boston",
+"right"
+]
+],
+"mirror": 0.5,
+"seed": 2
+},
+{
+"name": "long_ref",
+"holdout": [],
+"steps": 24000
+},
+{
+"name": "long_hold_sg",
+"steps": 24000
+},
+{
+"name": "enc_none_ref_s0",
+"features": "",
+"holdout": [],
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_none_hold_sg_s0",
+"features": "",
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_none_ref_s1",
+"features": "",
+"holdout": [],
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_none_hold_sg_s1",
+"features": "",
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_q_sem_ref_s0",
+"features": "q_sem",
+"holdout": [],
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_q_sem_hold_sg_s0",
+"features": "q_sem",
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_q_sem_ref_s1",
+"features": "q_sem",
+"holdout": [],
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_q_sem_hold_sg_s1",
+"features": "q_sem",
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_dinov2_ref_s0",
+"features": "dinov2",
+"holdout": [],
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_dinov2_hold_sg_s0",
+"features": "dinov2",
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_dinov2_ref_s1",
+"features": "dinov2",
+"holdout": [],
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_dinov2_hold_sg_s1",
+"features": "dinov2",
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_vjepa2_ref_s0",
+"features": "vjepa2",
+"holdout": [],
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_vjepa2_hold_sg_s0",
+"features": "vjepa2",
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_vjepa2_ref_s1",
+"features": "vjepa2",
+"holdout": [],
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_vjepa2_hold_sg_s1",
+"features": "vjepa2",
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_wm11_ref_s0",
+"features": "wm11",
+"holdout": [],
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_wm11_hold_sg_s0",
+"features": "wm11",
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_wm11_ref_s1",
+"features": "wm11",
+"holdout": [],
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_wm11_hold_sg_s1",
+"features": "wm11",
+"seed": 1,
+"pdm": false
+}
+]

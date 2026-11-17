@@ -59,8 +59,9 @@ class DinoV2:
 FRAME_ENCODERS = {"orbis": OrbisTokenizer, "dinov2": DinoV2}
 
 
-def build_encoder(name, device="cuda"):
+def build_encoder(name, device="cuda", **kwargs):
+    """kwargs go to the encoder, e.g. blocks=(11,) for the world model."""
     if name in FRAME_ENCODERS:
-        return FRAME_ENCODERS[name](device)
+        return FRAME_ENCODERS[name](device, **kwargs)
     from exp_navsim.encoders.clip_encoders import CLIP_ENCODERS
-    return CLIP_ENCODERS[name](device)
+    return CLIP_ENCODERS[name](device, **kwargs)

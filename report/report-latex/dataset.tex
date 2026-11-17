@@ -69,13 +69,17 @@ keeping (LK), history comfort (HC) and two-frame extended comfort (EC). EC
 compares the plan with the plan made 0.5\,s earlier, so a sampler that jumps
 between modes from frame to frame loses it. A penalty is waived if the human
 driver made the same violation. On navhard the scores of the two stages are
-combined, with stage-two scenes weighted by how close their start is to the
-endpoint of the stage-one plan.
+combined: for every pair of a scene and its previous frame, the stage-one score
+is multiplied by the stage-two score, where stage-two scenes are weighted by how
+close their start is to the endpoint of the stage-one plan, and these products
+are averaged.
 
 A full navtest run takes about 20 minutes. All EPDMS numbers in this report come
 from the official devkit. Our devkit gives the logged human trajectory 0.949 and
 PDM-Closed 0.871 on a 500-scene navtest subset, a few points above the published
 0.903 and 0.828. Comparisons with published navtest numbers are therefore
-approximate. Our navhard numbers are not comparable with the public leaderboard
-at all, which runs on a private copy of the split: constant velocity scores 0.326
-in our run and 0.114 on the leaderboard. On navhard we only compare our own runs.
+approximate. On navhard we report the combined score of the devkit, which is the
+number of the leaderboard. With it constant velocity scores 0.115 and all its
+per-stage sub-scores agree with the published constant-velocity row to 0.001
+(0.114 in py123d\_garage~\cite{py123dgarage}), so our navhard numbers can be
+compared with published ones directly.

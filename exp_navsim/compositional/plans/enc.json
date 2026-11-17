@@ -1,0 +1,106 @@
+[
+{
+"name": "enc_none_ref_s0",
+"features": "",
+"holdout": [],
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_none_hold_sg_s0",
+"features": "",
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_none_ref_s1",
+"features": "",
+"holdout": [],
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_none_hold_sg_s1",
+"features": "",
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_q_sem_ref_s0",
+"features": "q_sem",
+"holdout": [],
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_q_sem_hold_sg_s0",
+"features": "q_sem",
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_dinov2_ref_s0",
+"features": "dinov2",
+"holdout": [],
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_dinov2_hold_sg_s0",
+"features": "dinov2",
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_vjepa2_ref_s0",
+"features": "vjepa2",
+"holdout": [],
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_vjepa2_hold_sg_s0",
+"features": "vjepa2",
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_vjepa2_ref_s1",
+"features": "vjepa2",
+"holdout": [],
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_vjepa2_hold_sg_s1",
+"features": "vjepa2",
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_wm11_ref_s0",
+"features": "wm11",
+"holdout": [],
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_wm11_hold_sg_s0",
+"features": "wm11",
+"seed": 0,
+"pdm": false
+},
+{
+"name": "enc_wm11_ref_s1",
+"features": "wm11",
+"holdout": [],
+"seed": 1,
+"pdm": false
+},
+{
+"name": "enc_wm11_hold_sg_s1",
+"features": "wm11",
+"seed": 1,
+"pdm": false
+}
+]

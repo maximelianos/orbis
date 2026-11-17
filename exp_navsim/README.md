@@ -24,6 +24,10 @@ eval/baselines.py        constant velocity, train mean, nearest ego status
 | `eval/` | distribution metrics, offline evaluation, baselines, EPDMS (`pdm`, `navsim_agent`) |
 | `viz/` | episode / BEV drawing and dataset visualization |
 | `configs/` | `probe.yaml`, the single training config; everything else is a command-line override |
+| `diverse/` | intent-factorized flow matching against collapse (outputs/17_diversity) |
+| `verified/` | verifier guidance / rejection, one plan from the samples, verifier on more scenes (outputs/18_verified_sampling) |
+| `compositional/` | held-out (city, command) sweeps with the fast planner, nearest-neighbor analysis (outputs/22_compositional) |
+| `v22/` | NAVSIM v2.2: an exact fast navhard two-stage EPDMS on a subset of groups, and the planner with the py123d_garage recipe (flow matching with zero-noise inference, joint waypoint / action / path outputs, registers, QK-norm, a Hydra-MDP metric head, an auxiliary BEV head) (outputs/24_v22) |
 | `episode/` | the earlier whole-episode probe (variable-length episodes, tokenizer latents at 256 x 256); kept for the results in the report and the old checkpoints, see `episode/README.md` |
 
 ## Data

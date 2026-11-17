@@ -63,6 +63,9 @@ EVAL_SPLITS = {
                     filter=FILTERS / "navhard_two_stage.yaml",
                     synthetic_sensors=DOWNLOAD / "navhard_two_stage/sensor_blobs",
                     synthetic_scenes=DOWNLOAD / "navhard_two_stage/synthetic_scene_pickles"),
+    # Every frame of a few navtest log segments, for the videos (exp_navsim/viz/video.py segments).
+    "navtest_seq": dict(logs=DOWNLOAD / "test_navsim_logs/test", sensors=DOWNLOAD / "test_sensor_blobs/test",
+                        filter=Path("outputs/23_site/videos/navtest_seq_filter.yaml")),
 }
 SPLITS = {
     "navtrain": dict(

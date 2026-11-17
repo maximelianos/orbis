@@ -62,13 +62,18 @@ road. With the ego status, the world-model features are still worth 0.035 over
 $q_{\text{sem}}$.
 
 \paragraph{navhard.}
-On the two-stage navhard split all probes score between 0.33 and 0.41 with the
-sample mean, and the image-only world-model probe (0.367) is only a little above
-constant velocity under the same devkit (0.326). With the ego status both encoders
-reach about 0.41. The loss happens in stage two, where lane keeping falls to
-about 0.45 for every planner, constant velocity included. Stage two starts from a
-displaced ego pose, and a probe that imitates the logged driver has never seen
-how to return to the lane.
+On the two-stage navhard split the probes score between 0.15 and 0.20 with the
+sample mean. The image-only world-model probe reaches 0.177, against 0.115 for
+constant velocity. With the ego status and command both encoders reach about
+0.20 ($q_{\text{sem}}$ 0.199, world model 0.197). The fast planner of
+Section~\ref{sec:fast-planner} scores $0.265 \pm 0.004$ over three seeds, between
+LTF (0.251) and DiffusionDrive (0.275) as listed by py123d\_garage~\cite{py123dgarage},
+although these see three front cameras (DiffusionDrive also lidar) and we use only the front camera.
+The loss happens in stage two, where lane keeping falls to about 0.45 for every
+planner, constant velocity included, and the fast planner keeps the drivable
+area in 0.66 of the stage-two scenes against 0.84 in stage one. Stage two starts
+from a displaced ego pose, and a planner that imitates the logged driver has
+never seen how to return to the lane.
 
 \subsection{A fast planner on the frozen features}
 \label{sec:fast-planner}
@@ -192,3 +197,12 @@ fast planner on Orbis features is in the range of strong end-to-end planners.
 This is the practical answer to our question: the world model has learned enough
 about driving from video alone that a two-minute read-out drives as well as
 planners trained for the task.
+
+\paragraph{Same scorer as published (NAVSIM v1.1).}
+To remove the devkit difference we also scored our navtest predictions with the
+NAVSIM v1.1 devkit and its submission runner, as py123d\_garage~\cite{py123dgarage}
+does for its NAVSIM v1 table. Constant velocity gets PDMS 20.7, against 20.6 in the
+NAVSIM paper~\cite{navsim1}. The fast planner reaches $87.6 \pm 0.2$ over three
+seeds, close to TransFuser-K1 (87.9) and DiffusionDrive (88.1) and above LTFv6
+(86.4) in that table. The diffusion probe reaches 78.7 from the image alone and
+80.2 with the ego status and command.

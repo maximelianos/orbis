@@ -2,6 +2,9 @@
 
     # targets on the cached navtrain subset (cache_navtrain.py)
     python -m exp_navsim.planner.score_vocab --split navtrain_sub --vocab 256
+    # a second cached subset (verified/cache_more.py), whose token list lives elsewhere
+    python -m exp_navsim.planner.score_vocab --split navtrain_sub2 --vocab 256 \
+        --tokens outputs/18_verified_sampling/navtrain_sub2_tokens.json
     # ceiling of the vocabulary on the navtest subset: EPDMS of the best entry per scene
     python -m exp_navsim.planner.score_vocab --split navtest --vocab 256 --subset outputs/16_fast_planner/subset_500.json
 
@@ -27,6 +30,8 @@ def main():
     ap.add_argument("--split", default="navtrain_sub")
     ap.add_argument("--vocab", type=int, default=256)
     ap.add_argument("--subset", default=None, help="subset json (navtest); default: navtrain_sub_tokens.json")
+    ap.add_argument("--tokens", default=None,
+                    help='json with {"tokens": [...], "rows": [...]} of another cached navtrain split')
     ap.add_argument("--workers", type=int, default=24)
     ap.add_argument("--chunk", type=int, default=480)
     args = ap.parse_args()
@@ -34,6 +39,9 @@ def main():
     if args.subset:
         tokens, _ = load_subset(args.subset)
         rows = np.full(len(tokens), -1)
+    elif args.tokens:
+        d = json.load(open(args.tokens))
+        tokens, rows = d["tokens"], np.asarray(d["rows"])
     else:
         d = json.load(open(OUT / "navtrain_sub_tokens.json"))
         tokens, rows = d["tokens"], np.asarray(d["rows"])

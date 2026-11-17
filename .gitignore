@@ -51,5 +51,13 @@ data/navsim_index/
 data/features/
 data/frames/
 data/navtrain_latents*/
+data/bev_targets/
+data/goal_dac/
+data/navhard_sidecams/
+data/simscale/
 
 outputs/
+
+# Code of other projects
+orbis2_code/
+navsim_v1/

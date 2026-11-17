@@ -51,7 +51,7 @@ Remedy: all 92k scenes, >= 10-20 Euler steps, select on validation energy.
 | 500-scene EPDMS proxy | matches official per-scene scores exactly; Spearman 0.98 vs full navtest | 16_fast_planner |
 | Proposals are good, selection is the bottleneck | best of 8 anchors 0.95-0.96 | 16_fast_planner |
 | Sub-score distillation with 5% of targets does not help | 0.872-0.877 vs seeds 0.863-0.885 | 16_fast_planner |
-| navhard | all probes 0.33-0.41; stage-two lane keeping ~0.45 for every planner; not comparable with leaderboard | 11, 15 |
+| navhard | official combined EPDMS (fixed 11-04): constant velocity 0.115 (published 0.114), probes 0.15-0.20, fast planner 0.265 +- 0.004 over 3 seeds; stage-two lane keeping ~0.45 for every planner | 11, 15, 21 |
 
 ## Open items
 

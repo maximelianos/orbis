@@ -40,7 +40,7 @@ def dataset_for(cfg, split, max_scenes=None, seed=0, holdout=None, cities=None, 
     cities = cities if cities is not None else d.cities
     common = dict(features=list(d.features), feature_dir=d.feature_dir, history=d.history, channels=d.channels,
                   val_fraction=d.val_fraction)
-    if split in ("navtest", "navhard"):
+    if split.startswith(("navtest", "navhard")):            # also navtest_seq (exp_navsim/viz/video.py)
         ds = SceneFeatureDataset(f"data/navsim_index/{split}.pkl", split="all", require_future=require_future,
                                  **common)
     else:
